@@ -1,0 +1,17 @@
+extends: ../base_qwen_math.yaml
+
+# Stage-2 ablation: Stage 0 + token-entropy × w_pos only, no semantic-entropy.
+
+name: voi_stage1
+advantage:
+  mode: voi
+cascade:
+  stage0:
+    enabled: true
+  stage1:
+    enabled: true
+  stage2:
+    enabled: false            # ablate Stage 2
+wandb:
+  tags: [main, proposed, voi_stage1]
+  job_type: train

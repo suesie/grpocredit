@@ -1,0 +1,118 @@
+# grpocredit — context for Claude Code
+
+This file is auto-loaded by Claude Code. Read it before doing anything in this repo.
+
+## Project
+
+VoI-allocated credit assignment for GRPO on single-turn math reasoning. Sparse
+MC baselines at selected pivots, chosen by a cheap→expensive Value-of-Information
+cascade; TD-style segment advantages over probed pivots. Target venue: ICLR 2027
+(deadline ~2026-09-25). Primary rival: VinePPO (Kazemnejad et al. 2025) at
+matched compute.
+
+Design is frozen in two documents in the parent directory:
+- `../research_proposal_grpo_clean.md` — method (3 modules)
+- `../experiment_plan_grpo_voi.md` — timeline, sprint gates, compute budget
+
+## Committed decisions (do not re-litigate)
+
+| ID | Decision | Reason (from plan §0) |
+|---|---|---|
+| D1 | Matched-compute regime, 90 rollouts / trajectory | VinePPO's validated K=9 config would dominate us at matched-probes |
+| D2 | Binary Stage-2 gate at K_LA=4 | Continuous H_sem at K_LA=4 too noisy; upgrade to K_LA=8 only if survivor counts force it |
+| D3 | Qwen2.5-Math-7B-Instruct primary; DeepSeekMath-7B one repro run | Current SOTA math base |
+| D4 | GSM8K + MATH joint train; AIME24 + OlympiadBench + MATH-500 OOD | Verifier-scorable; cascade Stage 0 needs verifiable answers |
+| D5 | verl (Volcengine) as the RL framework | Cleanly supports custom advantage hooks; TRL is too rigid |
+
+## Sprint gate thresholds (`scripts/sprint_d3_gate_report.py`)
+
+| Check | Pass | Marginal | Fail |
+|---|---|---|---|
+| Concordance MI | `> 0.3` bits | `0.15`–`0.3` → NLI fallback | `≤ 0.15` → Plan B (§8 of plan) |
+| `ρ(s_2, Var_{a~π}(Q^π))` 95% CI lower bound | `≥ ρ_gate` | straddles `ρ_gate` | below |
+| κ | `≥ 3` | `2`–`3` | `< 2` (paper pivots to efficiency headline) |
+
+`ρ_gate = sqrt(f_target / (f_sel · κ))` with `f_target = 0.10`, `f_sel = 0.15`.
+
+Plan B (§8 of `experiment_plan_grpo_voi.md`) is pre-designed — if concordance
+fails, pivot to doubly-robust GRPO with IG-as-implicit-baseline. ~70% infra
+overlap; only Stage 2 swaps out.
+
+## Repo layout
+
+```
+src/grpocredit/
+  common/      configs (pydantic + YAML extends), wandb wrapper, shared dataclasses
+  rollout/     vLLM runner (full / continue / forced-first-token), boundary detector,
+               math_verify wrapper, GSM8K/MATH/AIME24/Olympiad/MATH-500 loaders
+  voi/         Stage 0 group filter, Stage 1 H_token·w_pos, Stage 2 sentence-T5 clustering,
+               CUSUM auxiliary, cascade orchestrator (offline + online paths)
+  advantage/   TD-style segment GAE over sparse pivots, James–Stein / SE shrinkage
+  oracle/      Q^π-variance oracle (top-M forced actions + optional tail stratum),
+               concordance MI, κ with bootstrap CI, position-decile curve
+  training/    (empty — verl integration lands in Week 1 of main phase)
+
+scripts/
+  sprint_d1_infra_smoke.py     Day 1 — infra smoke test
+  sprint_d2_concordance.py     Day 2A — concordance MI gate
+  sprint_d2_oracle.py          Day 2B — Q^π-variance oracle + κ + ρ + position curve
+  sprint_d3_gate_report.py     Day 3 — decision table → GATE_REPORT.md
+  run_sprint.sh                runs all four in order
+
+configs/
+  base_qwen_math.yaml               base (all others `extends:` this)
+  baselines/{grpo,vineppo,random_cascade}.yaml
+  proposed/{voi_stage1,voi_full,voi_full_cusum}.yaml
+```
+
+## Conventions
+
+- **Wandb is mandatory.** Every executable script wraps in `init_wandb(...)` →
+  `wandb_run.finish()`. Metrics + configs + key JSON/CSV artifacts go up. JSON/CSV
+  under `experiments/` is a secondary record, not a replacement. On air-gapped
+  nodes: `WANDB_MODE=offline`, sync after. Default project: `grpo-voi`.
+- **Configs use `extends:`** — every variant inherits from `base_qwen_math.yaml`
+  and overrides only the differing keys. `load_config()` handles the merge.
+- **Boundary indexing.** `Boundary.token_position = k` means prefix is
+  `trajectory.token_ids[:k]` and the next-token distribution at `s_b` sampled
+  `token_ids[k]`. `token_entropies[k]` is `H(π(·|s_b))`.
+- **Stage-2 lookahead dicts are keyed by `id(boundary)`**, not by
+  `boundary_idx` — `boundary_idx` is only unique within one trajectory, so
+  dict merges across a group would collide.
+- **Default advantage shrinkage** is James–Stein `α(M) = M/(M+4)`. The
+  `shrinkage.mode = "none"` path is for VinePPO-style uniform K that doesn't
+  need it.
+- **Verifier** is the `math-verify` PyPI package, not a VinePPO vendor.
+  Wrapped in `grpocredit.rollout.verifier.MathVerifier` with
+  boxed / answer_is / gsm8k_hash / fallback extraction priority.
+
+## Running the sprint
+
+```bash
+# Assumes `pip install -e ".[vllm,dev]"` already done, WANDB_API_KEY exported.
+export WANDB_PROJECT=grpo-voi
+bash scripts/run_sprint.sh
+# Exit codes from sprint_d3: 0 proceed · 2 proceed-w-caveats · 3 pilot-required
+# · 4 pivot to Plan B · 5 missing data
+```
+
+## Known landmines
+
+- **vLLM on Windows** — doesn't install. Development is on a Linux GPU node.
+- **Offset mapping** — `scripts/_shared.offset_mapping_from_tokenizer` primary
+  path uses `return_offsets_mapping=True` (fast tokenizers). The greedy-decode
+  fallback is O(n²) and should rarely be hit.
+- **`id()` identity for boundaries** — reused across stages 1→2→cascade. Don't
+  `copy.deepcopy` a boundary then look it up in a lookahead dict.
+- **Tail stratum sampling** — uses rejection against the top-M token set, not
+  true conditional sampling. Matches plan §3.1.3's operational rule; mention
+  the caveat if reviewers ask.
+
+## Open items (as of sprint start, 2026-04-24)
+
+- [ ] verl fork with a custom advantage hook (Day 4 of sprint / Week 1 of main)
+- [ ] Decide Stage-1 `w_pos_shape`: tent default, but if the oracle position
+      curve is flat, switch to `uniform`; if bimodal, switch to `lookup` with
+      the `position_lookup.csv` the oracle writes.
+- [ ] CUSUM stacking — only if `ρ(|δ_t|, Var(Q^π)) > ρ(H_token, Var(Q^π))`
+      in the offline diagnostic. Default config has CUSUM off.

@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+build/
+dist/
+*.egg
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Model caches / data
+models/
+cache/
+.cache/
+hf_cache/
+
+# Experiment outputs
+experiments/**/*.jsonl
+experiments/**/*.json
+experiments/**/*.csv
+experiments/**/*.parquet
+experiments/**/*.png
+experiments/**/*.pdf
+!experiments/**/.gitkeep
+
+# Wandb
+wandb/
+
+# Logs
+*.log
+logs/
+
+# Claude Code — machine-local
+.claude/settings.local.json
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/

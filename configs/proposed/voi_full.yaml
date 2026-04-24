@@ -1,0 +1,20 @@
+extends: ../base_qwen_math.yaml
+
+# Full cascade: Stage 0 success-rate + Stage 1 H_token × w_pos +
+# Stage 2 semantic-entropy (K_LA=4, binary gate).
+
+name: voi_full
+advantage:
+  mode: voi
+cascade:
+  stage0:
+    enabled: true
+  stage1:
+    enabled: true
+  stage2:
+    enabled: true
+    gate_mode: binary
+    n_lookaheads: 4
+wandb:
+  tags: [main, proposed, voi_full]
+  job_type: train

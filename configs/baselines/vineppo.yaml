@@ -1,0 +1,23 @@
+extends: ../base_qwen_math.yaml
+
+# VinePPO reproduction (Kazemnejad et al. 2025): K=9 uniform MC at every
+# syntactic boundary. Uses the same boundary detector; disables the cascade so
+# every boundary becomes a probe.
+
+name: vineppo
+advantage:
+  mode: vineppo
+  shrinkage:
+    mode: none              # uniform K=9 → shrinkage not needed
+cascade:
+  stage0:
+    enabled: false
+  stage1:
+    enabled: false          # no selection — probe every boundary
+  stage2:
+    enabled: false
+oracle:
+  rollouts_per_forced_action: 9   # K=9 (VinePPO sweet spot, their Fig 7b)
+wandb:
+  tags: [main, baseline, vineppo]
+  job_type: train

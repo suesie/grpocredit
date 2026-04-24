@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "_comment": "Copy this to settings.local.json (which is gitignored) for machine-specific permissions/env. Example below: pre-approve a few cluster-only tools.",
+  "permissions": {
+    "allow": [
+      "Bash(nvidia-smi)",
+      "Bash(squeue *)",
+      "Bash(sbatch *)",
+      "Bash(scp *)",
+      "Bash(rsync *)"
+    ]
+  },
+  "env": {
+    "HF_HOME": "/scratch/${USER}/.cache/hf",
+    "TRANSFORMERS_CACHE": "/scratch/${USER}/.cache/hf"
+  }
+}

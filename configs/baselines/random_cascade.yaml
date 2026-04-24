@@ -1,0 +1,19 @@
+extends: ../base_qwen_math.yaml
+
+# Control: cascade with random boundary selection (ε = 1.0). Isolates the
+# contribution of VoI-ranked selection vs. plain MC at any boundary.
+
+name: random_cascade
+advantage:
+  mode: random_cascade
+cascade:
+  stage0:
+    enabled: true
+  stage1:
+    enabled: false
+  stage2:
+    enabled: false
+    epsilon_random: 1.0       # all budget goes to the hedge (uniform random)
+wandb:
+  tags: [main, baseline, random_cascade]
+  job_type: train

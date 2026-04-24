@@ -1,0 +1,95 @@
+# Base experiment config (plan D3): Qwen2.5-Math-7B-Instruct on MATH/GSM8K.
+# Every other YAML in this directory should `extends: base_qwen_math.yaml` and
+# override only the fields that differ — this file is the single source of
+# truth for rollout/cascade/oracle defaults.
+
+name: base_qwen_math
+seed: 42
+output_dir: experiments/sprint
+device: cuda
+
+model:
+  name_or_path: Qwen/Qwen2.5-Math-7B-Instruct
+  dtype: bfloat16
+  trust_remote_code: true
+
+rollout:
+  backend: vllm
+  max_new_tokens: 1024
+  temperature: 0.9
+  top_p: 0.95
+  top_k: -1
+  n_per_prompt: 8               # group size G (main GRPO rollouts)
+  batch_size: 64
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.9
+  swap_space_gb: 4
+  enable_prefix_caching: true
+  lookahead_max_new_tokens: 30  # K_LA short continuations for Stage 2
+  lookahead_temperature: 1.0
+  seed: 42
+
+boundary:
+  max_boundaries_per_trajectory: 30
+  min_tokens_between_boundaries: 8
+  byte_budget_stride: 128
+  min_boundaries_for_drift_fallback: 3
+
+cascade:
+  stage0:
+    enabled: true
+  stage1:
+    enabled: true
+    w_pos_shape: tent         # 'tent' | 'gaussian' | 'lookup' | 'uniform'
+    keep_top_pct: 0.5
+    use_collision_entropy: false
+  stage2:
+    enabled: true
+    n_lookaheads: 4           # D2 default — binary gate at K_LA=4
+    lookahead_max_new_tokens: 30
+    lookahead_temperature: 1.0
+    encoder: sentence-transformers/sentence-t5-base
+    encoder_batch_size: 32
+    cosine_threshold: 0.85
+    gate_mode: binary         # 'binary' for K_LA=4; bump to 'continuous' with K_LA=8
+    keep_top_pct: 0.3
+    epsilon_random: 0.05
+    nli_fallback_model: microsoft/deberta-v2-xxlarge-mnli
+  cusum:
+    enabled: false            # off until offline gate validates stacking
+
+advantage:
+  mode: voi                   # default; baselines override this
+  token_assignment: uniform
+  length_aggregation: per_sequence
+  shrinkage:
+    mode: james_stein
+    james_stein_tau: 4.0
+
+oracle:
+  n_trajectories: 100
+  boundaries_per_trajectory: 5
+  top_m_actions: 6
+  rollouts_per_forced_action: 32      # K
+  include_tail_stratum: true
+  tail_stratum_size: 16
+  coverage_threshold_for_tail: 0.9
+  concordance_lookaheads: 4
+  concordance_terminal_temperature: 0.9
+  concordance_min_boundaries: 500
+
+data:
+  train_datasets: [math]              # sprint uses MATH only; main joins GSM8K
+  eval_datasets: [math, gsm8k]
+  ood_datasets: [aime24, olympiadbench, math500]
+  split: train
+  n_prompts: null
+  prompt_template: math_instruct
+
+wandb:
+  project: grpo-voi
+  entity: null
+  mode: online
+  tags: [sprint, offline]
+  group: null
+  job_type: null

@@ -1,0 +1,17 @@
+extends: ../base_qwen_math.yaml
+
+name: grpo
+advantage:
+  mode: grpo              # trajectory-level r - r_bar, uniform per token
+  shrinkage:
+    mode: none
+cascade:
+  stage0:
+    enabled: false
+  stage1:
+    enabled: false
+  stage2:
+    enabled: false
+wandb:
+  tags: [main, baseline, grpo]
+  job_type: train
