@@ -40,6 +40,26 @@ python scripts/sprint_d3_gate_report.py --sprint-dir experiments/sprint
 
 Each script writes JSON/CSV under `experiments/sprint/` *and* logs metrics/artifacts to wandb. Results of the Day 3 gate (`GATE_REPORT.md`) lock the main-experiment plan for the next 4 weeks — see `experiment_plan_grpo_voi.md` §2.
 
+## Server2 runbooks
+
+Three runbooks cover the production launch on server2 (single 80 GB GPU is enough per phase). They differ in scope:
+
+| Runbook | Scope | Status |
+|---|---|---|
+| `SERVER2_RUNBOOK.md` | Master phase index — A → B1 → B2a → B2b. Detailed for Phase A; for B1 it punts to the VinePPO doc. | A ready; B2a/B2b are placeholders |
+| `../VinePPO/SERVER2_RUNBOOK.md` | B1 subsystem reference — VinePPO repro + treetune-internal GRPO. | Ready |
+| `SERVER2_RUNBOOK_paired_runs.md` | B1 orchestration — sanity → VinePPO → GRPO → oracle on each GRPO iter. Adds the per-iter oracle wrapper on top of what the other two cover. | Ready |
+
+Execution order on a fresh server2:
+
+1. **One-time setup.** Create both conda envs, download the 4 checkpoints, log into wandb. Use `SERVER2_RUNBOOK.md` §0–§1 for the `grpocredit` env and `../VinePPO/SERVER2_RUNBOOK.md` §1.1–§1.4 for the `vineppo` env.
+2. **Pre-flight sanity (every session).** `bash scripts/sanity_check_server2.sh` — fails fast on env / test / cache problems before you burn GPU hours.
+3. **Phase A — oracle on the 4 starting policies.** Follow `SERVER2_RUNBOOK.md` §2. Cheapest first (rho-1b, ~30 min), then DeepSeek-MATH-v2 / DeepSeek-GSM8K (~3–4 h each), then Qwen-Instruct as the saturation-ceiling probe. **Gating step** — exit code 6 on the §5 group-variance gate means do not RL on that `π_ref`. Total ~7–9 h.
+4. **Phase B1 — paired runs + per-iter oracle.** Follow `SERVER2_RUNBOOK_paired_runs.md` end-to-end (it is the umbrella). Its §2 launches VinePPO, §3 launches matched-trainer GRPO, §4 oracles each emitted GRPO checkpoint. The other two runbooks are subsystem references that §2/§3 of this doc point into for deeper detail. Total ~10–14 h on rho-1b, 4–6× that on 7B.
+5. **Phase B2a / B2b** — code not yet written; placeholders in the master runbook.
+
+For B1 work specifically: `SERVER2_RUNBOOK_paired_runs.md` is the one you follow top-to-bottom; the other two are subsystem references it points into. Phase A is the prerequisite that decides which starting policies are worth RL'ing on.
+
 ## Committed sprint decisions (do not re-litigate)
 
 | ID | Decision | Source |
