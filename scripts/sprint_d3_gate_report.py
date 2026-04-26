@@ -5,6 +5,7 @@ Reads:
   experiments/sprint/oracle_summary.json
   experiments/sprint/oracle_correlations.json
   experiments/sprint/oracle_kappa.txt
+  experiments/sprint/day1_group_variance.json   (sft_warmup_plan.md §5 gate)
 
 Writes:
   experiments/sprint/GATE_REPORT.md   — human-readable decision table
@@ -15,9 +16,13 @@ Prints a decision table and exits with:
   2  — marginal (1 gate marginal) → proceed with caveats
   3  — 2+ marginal → pilot training needed
   4  — hard fail on concordance → pivot to Plan B (§8 of plan)
+  5  — sprint outputs missing
+  6  — group-variance gate failed → wrong starting policy
+       (sft_warmup_plan.md §5; switch `π_ref` and re-run)
 
 The exit code lets `scripts/main_train.sh` decide whether to launch the main
-experiment or fork into Plan B.
+experiment, fork into Plan B, or refuse to RL on a methodologically broken
+starting policy.
 """
 
 from __future__ import annotations
@@ -60,6 +65,15 @@ def main(
     gate_concordance_nli_bits: float = typer.Option(0.15),
     gate_kappa_pass: float = typer.Option(3.0),
     gate_kappa_marginal: float = typer.Option(2.0),
+    gate_group_variance_pass: float = typer.Option(
+        0.5,
+        help=(
+            "§5 of sft_warmup_plan.md: PASS iff fraction of G-groups with "
+            "Var(reward) > 0 at step 0 is ≥ this. Below ≈0.5 means the "
+            "starting policy is too saturated (e.g., Qwen-Instruct) or too "
+            "weak — pivot to a different `π_ref` before RL."
+        ),
+    ),
 ) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     sprint_path = Path(sprint_dir)
@@ -70,6 +84,7 @@ def main(
     conc = _try_read(sprint_path / "concordance_mi.json")
     oracle = _try_read(sprint_path / "oracle_summary.json")
     corrs = _try_read(sprint_path / "oracle_correlations.json")
+    gv = _try_read(sprint_path / "day1_group_variance.json")
 
     concordance_mi = conc["mean_mi_bits"] if conc else None
     kappa = oracle["kappa"] if oracle else None
@@ -77,6 +92,7 @@ def main(
     rho_s2_ci = oracle["rho_s2_ci"] if oracle else [None, None]
     rho_gate = oracle["rho_gate"] if oracle else None
     position_shape = oracle["position_shape"] if oracle else None
+    gv_frac = gv["fraction_informative"] if gv else None
 
     # Decisions
     def concordance_decision() -> str:
@@ -106,16 +122,46 @@ def main(
             return "marginal"
         return "fail"
 
+    def group_variance_decision() -> str:
+        # sft_warmup_plan.md §5: this is a hard gate (no marginal band).
+        # Below the threshold, the starting policy is methodologically broken
+        # for our credit-assignment claim — RL'ing on top of it is not a
+        # defensible experiment regardless of how the other gates land.
+        if gv_frac is None:
+            return "missing"
+        if gv_frac >= gate_group_variance_pass:
+            return "pass"
+        return "fail"
+
     c_dec = concordance_decision()
     k_dec = kappa_decision()
     r_dec = rho_decision()
+    gv_dec = group_variance_decision()
 
-    decisions = {"concordance": c_dec, "kappa": k_dec, "rho_s2": r_dec}
+    decisions = {
+        "concordance": c_dec,
+        "kappa": k_dec,
+        "rho_s2": r_dec,
+        "group_variance": gv_dec,
+    }
     n_pass = sum(1 for v in decisions.values() if v == "pass")
     n_marginal = sum(1 for v in decisions.values() if v.startswith("marginal"))
     n_fail = sum(1 for v in decisions.values() if v == "fail")
 
-    if c_dec == "fail":
+    if gv_dec == "fail":
+        # The §5 gate is the most upstream of all — failing it means the
+        # starting policy itself is wrong. None of the downstream oracle
+        # numbers are interpretable until this is fixed.
+        overall = "wrong_starting_policy"
+        exit_code = 6
+        next_steps = (
+            "Group-variance gate FAILED at step 0 — starting policy is too "
+            "saturated or too weak (sft_warmup_plan.md §5). DO NOT proceed "
+            "to RL. Switch `π_ref` to a SFT-warmed model (Option B: "
+            "`realtreetune/deepseekmath-7b-sft-{MATH-v2,GSM8K}`; or Option A: "
+            "SFT `Qwen2.5-Math-7B` base ourselves). Re-run sprint Day 1+."
+        )
+    elif c_dec == "fail":
         overall = "pivot_plan_b"
         exit_code = 4
         next_steps = "Pivot to Plan B — doubly-robust GRPO with IG-as-implicit-baseline (plan §8)."
@@ -134,7 +180,7 @@ def main(
         overall = "proceed_with_caveats"
         exit_code = 2
         next_steps = "1 gate marginal — proceed with main plan, note the caveat in the paper."
-    elif n_pass >= 3:
+    elif n_pass >= 4:
         overall = "proceed"
         exit_code = 0
         next_steps = "All gates pass — launch 15 training runs per experiment plan §3.1."
@@ -151,6 +197,8 @@ def main(
         "rho_s2_ci": rho_s2_ci,
         "rho_gate": rho_gate,
         "position_shape": position_shape,
+        "group_variance_fraction_informative": gv_frac,
+        "group_variance_threshold": gate_group_variance_pass,
         "gates": decisions,
         "overall": overall,
         "exit_code": exit_code,
@@ -175,6 +223,7 @@ def main(
         "",
         "| Check | Value | Threshold | Status |",
         "|---|---|---|---|",
+        f"| Group-variance fraction at step 0 (sft_warmup_plan §5) | {_fmt(gv_frac)} | ≥ {gate_group_variance_pass} | {gv_dec} |",
         f"| Concordance MI | {_fmt(concordance_mi)} bits | > {gate_concordance_pass_bits} bits | {c_dec} |",
         f"| κ (variance concentration) | {_fmt(kappa)} | ≥ {gate_kappa_pass} | {k_dec} |",
         f"| ρ(s_2, Var(Q^π)) 95% CI low | {_fmt(rho_s2_ci[0])} | ≥ ρ_gate = {_fmt(rho_gate)} | {r_dec} |",
@@ -186,6 +235,7 @@ def main(
         "",
         "## Raw values",
         "",
+        f"- group-variance fraction (informative): {gv_frac}",
         f"- concordance mean MI (bits): {concordance_mi}",
         f"- κ: {kappa}",
         f"- ρ(s_2, Var(Q^π)): {rho_s2}",
@@ -202,6 +252,7 @@ def main(
         "gate/decisions",
         columns=["check", "value", "threshold", "status"],
         rows=[
+            ["group_variance_fraction", gv_frac, gate_group_variance_pass, gv_dec],
             ["concordance_mi_bits", concordance_mi, gate_concordance_pass_bits, c_dec],
             ["kappa", kappa, gate_kappa_pass, k_dec],
             ["rho_s2_ci_low", rho_s2_ci[0], rho_gate, r_dec],

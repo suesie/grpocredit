@@ -38,6 +38,10 @@ from grpocredit.common.utils import (  # noqa: E402
     write_json,
     write_jsonl,
 )
+from grpocredit.oracle.group_variance import (  # noqa: E402
+    compute_group_variance_report,
+    grouped_rewards_from_runner_output,
+)
 from grpocredit.rollout.datasets import load_prompts  # noqa: E402
 from grpocredit.rollout.verifier import MathVerifier  # noqa: E402
 from grpocredit.voi.stage2_semantic import Stage2Scorer  # noqa: E402
@@ -61,6 +65,24 @@ def main(
     run_name: str = typer.Option("sprint-d1-infra-smoke", help="wandb run name"),
     stop_gate_min_boundaries: float = typer.Option(3.0),
     stop_gate_min_verifier_acc: float = typer.Option(0.9),
+    group_variance_probe_prompts: int = typer.Option(
+        256,
+        help=(
+            "Number of distinct prompts for the §5 group-variance gate. "
+            "Set to 0 to skip the probe (e.g., for a fast smoke test)."
+        ),
+    ),
+    group_variance_G: int = typer.Option(
+        8, help="Group size G for the §5 group-variance gate (default 8 = main GRPO size)."
+    ),
+    stop_gate_min_group_variance_frac: float = typer.Option(
+        0.5,
+        help=(
+            "§5 gate: fraction of G-groups with informative (Var(r) > 0) reward. "
+            "Below this, RL on this `π_ref` is a bad bet — see "
+            "research_plan/sft_warmup_plan.md §5 for the reasoning."
+        ),
+    ),
 ) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = load_config(config, overrides={"output_dir": output_dir, "name": run_name})
@@ -228,9 +250,81 @@ def main(
             }
         )
 
+    # ── 6. Group-variance gate (sft_warmup_plan.md §5) ────────────
+    # Sample N prompts × G rollouts, score, count fraction of groups with
+    # Var(reward) > 0. PASS gate: ≥ stop_gate_min_group_variance_frac.
+    # On a saturated start (e.g., Qwen-Instruct, pass@1≈0.95) most groups
+    # are degenerate and this fails — exactly the case the plan flags as
+    # "do NOT start RL here". The metric also doubles as a paper figure
+    # ("informative-group fraction at step 0 across starting policies").
+    gv_report_dict = None
+    if group_variance_probe_prompts > 0:
+        log.info(
+            "Group-variance gate: %d prompts × G=%d rollouts",
+            group_variance_probe_prompts,
+            group_variance_G,
+        )
+        gv_prompts = load_prompts(
+            cfg.data.train_datasets[0] if cfg.data.train_datasets else "math",
+            split="train",
+            n=group_variance_probe_prompts,
+        )
+        gv_formatted = build_prompts(
+            gv_prompts, tokenizer, template=cfg.data.prompt_template
+        )
+        gv_groups = runner.generate_from_prompts(
+            gv_formatted,
+            n_per_prompt=group_variance_G,
+            seed=cfg.seed + 7,
+        )
+        gv_rewards = grouped_rewards_from_runner_output(
+            gv_groups,
+            verifier,
+            ground_truth_answers=[p.ground_truth_answer for p in gv_prompts],
+        )
+        gv_report = compute_group_variance_report(gv_rewards)
+        gv_report_dict = gv_report.to_dict()
+        gv_report_dict["G"] = group_variance_G
+        gv_report_dict["probe_prompts"] = group_variance_probe_prompts
+        gv_report_dict["pass_threshold"] = stop_gate_min_group_variance_frac
+        gv_report_dict["pass"] = (
+            gv_report.fraction_informative >= stop_gate_min_group_variance_frac
+        )
+        write_json(out_dir / "day1_group_variance.json", gv_report_dict)
+        wandb_run.log_artifact(
+            out_dir / "day1_group_variance.json",
+            artifact_type="group_variance",
+            name="day1_group_variance",
+        )
+        wandb_run.log(
+            {
+                "group_variance/fraction_informative": gv_report.fraction_informative,
+                "group_variance/n_groups": gv_report.n_groups,
+                "group_variance/n_informative": gv_report.n_informative,
+                "group_variance/n_all_correct": gv_report.n_groups_all_correct,
+                "group_variance/n_all_wrong": gv_report.n_groups_all_wrong,
+                "group_variance/mean_group_reward_mean": gv_report.mean_group_reward_mean,
+                "group_variance/mean_group_reward_std": gv_report.mean_group_reward_std,
+                "group_variance/G": group_variance_G,
+                "group_variance/pass": gv_report_dict["pass"],
+            }
+        )
+        log.info(
+            "Group-variance gate: %.3f informative-group fraction (%d/%d) — %s",
+            gv_report.fraction_informative,
+            gv_report.n_informative,
+            gv_report.n_groups,
+            "PASS" if gv_report_dict["pass"] else "FAIL",
+        )
+
     # ── Stop-gate evaluation ───────────────────────────────────────
+    gv_fail = (
+        gv_report_dict is not None and not gv_report_dict["pass"]
+    )
     stop_gate_triggered = (
-        mean_b < stop_gate_min_boundaries or verifier_acc < stop_gate_min_verifier_acc
+        mean_b < stop_gate_min_boundaries
+        or verifier_acc < stop_gate_min_verifier_acc
+        or gv_fail
     )
     gate_report = {
         "n_trajectories": n_trajectories_actual,
@@ -238,6 +332,7 @@ def main(
         "boundaries_min": min_b,
         "boundaries_max": max_b,
         "verifier_accuracy": verifier_acc,
+        "group_variance": gv_report_dict,
         "stop_gate_triggered": stop_gate_triggered,
         "pass": not stop_gate_triggered,
     }

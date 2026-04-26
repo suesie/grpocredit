@@ -43,6 +43,9 @@ logs/
 # Claude Code — machine-local
 .claude/settings.local.json
 
+# VS Code SFTP — host/path is personal
+.vscode/sftp.json
+
 # pytest / coverage
 .pytest_cache/
 .coverage

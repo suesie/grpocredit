@@ -1,0 +1,33 @@
+extends: ../base_qwen_math.yaml
+
+# Phase A oracle on VinePPO's published DeepSeekMath SFT checkpoint
+# (`realtreetune/deepseekmath-7b-sft-MATH-v2`). Per `research_plan/sft_warmup_plan.md`
+# §3.B (lines 128-131) and §4.1 (lines 195-200), this checkpoint is the
+# **headline RL starting policy** — the same SFT'd weights VinePPO trained on
+# top of, used here so the VoI/GRPO comparison is matched-compute apples-to-apples
+# vs the published VinePPO numbers. Sibling config for the GSM8K-SFT'd variant
+# is in `deepseek_math_sft_gsm8k.yaml`.
+name: oracle_deepseekmath_sft_math_v2
+output_dir: experiments/oracle/deepseekmath_sft_math_v2
+
+model:
+  name_or_path: realtreetune/deepseekmath-7b-sft-MATH-v2
+  dtype: bfloat16
+  trust_remote_code: true
+
+data:
+  train_datasets: [math]              # MATH (matches the SFT'd variant)
+  eval_datasets: [math]
+  prompt_template: math_instruct      # tokenizer chat template if exposed,
+                                      # otherwise falls back to System/User/Assistant
+                                      # (see runbook caveat — DeepSeekMath SFT
+                                      # uses a different format)
+
+# DeepSeekMath SFT format expects \boxed{} answers; verifier defaults still apply.
+# If oracle κ comes out anomalously low here while Qwen-Instruct (saturation
+# ceiling) looks plausible, suspect a prompt-format mismatch and try the
+# explicit DeepSeekMath template (see plan §6 line 271-277 caveat list).
+
+wandb:
+  tags: [phase_a, oracle, deepseekmath_sft_math_v2, headline_rl_init]
+  job_type: oracle

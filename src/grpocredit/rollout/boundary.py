@@ -76,6 +76,35 @@ def _char_to_token(char_pos: int, offset_mapping: list[tuple[int, int]]) -> int:
     return len(offset_mapping)
 
 
+# Boundary-kind priority for kind-aware dedup. When two boundaries fall within
+# `min_tokens_between_boundaries`, two rules cooperate:
+#   1. A higher-priority kind escapes dedup even if it is closer than min_dist
+#      to the previously kept boundary (it carries strictly more information).
+#   2. If two boundaries land at the *same* token position, the higher-priority
+#      kind is the one we surface for that position.
+# Logical connectives (`Therefore`, `Thus`, `Hence`, …) carry the most
+# step-by-step reasoning signal, so they outrank generic step markers and
+# paragraph breaks; the boxed-answer marker is the highest-value boundary in
+# math problems.
+_KIND_PRIORITY: dict[str, int] = {
+    "boxed": 6,
+    "therefore": 5,
+    "hence": 5,
+    "thus": 5,
+    "step": 4,
+    "however": 3,
+    "but": 3,
+    "so": 3,
+    "paragraph": 2,
+    "punct": 1,
+    "byte": 0,
+}
+
+
+def _kind_priority(kind: str) -> int:
+    return _KIND_PRIORITY.get(kind, 2)
+
+
 def _dedup_by_token_distance(
     boundaries: list[Boundary], min_dist: int
 ) -> list[Boundary]:
@@ -83,7 +112,15 @@ def _dedup_by_token_distance(
         return []
     kept: list[Boundary] = [boundaries[0]]
     for b in boundaries[1:]:
-        if b.token_position - kept[-1].token_position >= min_dist:
+        gap = b.token_position - kept[-1].token_position
+        if gap >= min_dist:
+            kept.append(b)
+            continue
+        # Within the dedup window. If the new boundary's kind is *strictly*
+        # higher priority than the last kept, surface it as well — a paragraph
+        # break immediately followed by `Therefore` should yield both segments
+        # of credit-assignment information, not just the paragraph break.
+        if _kind_priority(b.kind) > _kind_priority(kept[-1].kind):
             kept.append(b)
     return kept
 
@@ -120,8 +157,15 @@ class BoundaryDetector:
         boundaries: list[Boundary] = []
         for idx, rm in enumerate(raw):
             tp = _char_to_token(rm.char_position, offset_mapping)
-            # Skip degenerate boundaries at the very start / very end
-            if tp <= 0 or tp >= num_tokens - 1:
+            # Skip degenerate boundaries at the very end. Position 0 is only
+            # degenerate for paragraph breaks (they mark a *prior* break that
+            # doesn't exist before the response starts); informative markers
+            # like "Step 1:" or "\\boxed{" can legitimately sit at position 0.
+            if tp >= num_tokens - 1:
+                continue
+            if tp < 0:
+                continue
+            if tp == 0 and rm.kind == "paragraph":
                 continue
             boundaries.append(
                 Boundary(

@@ -1,0 +1,39 @@
+extends: base_qwen_math.yaml
+
+# Headline RL-init base config — Option B per `research_plan/sft_warmup_plan.md`
+# §3.B (lines 122-164) and §4.1 (lines 195-200).
+#
+# This file is the single source of truth for the matched-compute comparison
+# vs VinePPO: same starting weights, same SFT recipe (VinePPO's), only the RL
+# advantage / credit-assignment algorithm differs. Use it as `extends:` for any
+# YAML that needs the DeepSeekMath SFT'd starting point — `oracle/`,
+# `baselines/`, `proposed/`, etc.
+#
+# Defaults to the MATH-v2 variant (matches the `train_datasets: [math]` flow
+# inherited from base_qwen_math.yaml). For GSM8K, override `model.name_or_path`
+# to `realtreetune/deepseekmath-7b-sft-GSM8K` and `data.train_datasets: [gsm8k]`
+# (see `oracle/deepseek_math_sft_gsm8k.yaml` for the pattern).
+
+name: base_deepseekmath_sft
+
+model:
+  name_or_path: realtreetune/deepseekmath-7b-sft-MATH-v2
+  dtype: bfloat16
+  trust_remote_code: true       # DeepSeekMath ships custom modeling code in some releases
+
+# DeepSeekMath SFT'd checkpoints expect \boxed{...} answers (matches our
+# math-verify defaults). Their tokenizer may not expose a HuggingFace-style
+# chat template — `prompt_template: math_instruct` falls back to the bare
+# System/User/Assistant scaffolding when `tokenizer.apply_chat_template` is
+# unavailable, which is consistent with how VinePPO formats prompts.
+#
+# If the verifier-extraction rate (sprint_d1's `day1_verifier_accuracy.txt`)
+# falls below 0.95 on this base, the cause is almost certainly a prompt-format
+# mismatch — fix by porting VinePPO's GSM8K/MATH prompt template into
+# `grpocredit.rollout.datasets.TEMPLATES` and switching `prompt_template` here,
+# rather than by changing the verifier.
+data:
+  prompt_template: math_instruct
+
+wandb:
+  tags: [headline_rl_init, deepseekmath_sft]

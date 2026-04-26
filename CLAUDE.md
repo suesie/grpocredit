@@ -20,7 +20,7 @@ Design is frozen in two documents in the parent directory:
 |---|---|---|
 | D1 | Matched-compute regime, 90 rollouts / trajectory | VinePPO's validated K=9 config would dominate us at matched-probes |
 | D2 | Binary Stage-2 gate at K_LA=4 | Continuous H_sem at K_LA=4 too noisy; upgrade to K_LA=8 only if survivor counts force it |
-| D3 | Qwen2.5-Math-7B-Instruct primary; DeepSeekMath-7B one repro run | Current SOTA math base |
+| D3 | **SUPERSEDED — see `../research_plan/sft_warmup_plan.md`.** Headline RL init is `realtreetune/deepseekmath-7b-sft-{MATH-v2,GSM8K}` (Option B); Qwen2.5-Math-7B base + own SFT is the secondary modernization run (Option A). Qwen2.5-Math-7B-Instruct is retired as an RL start (already SFT+GRPO'd) and used only as a saturation-ceiling probe. | Original D3 picked Qwen-Instruct as primary; that conflates VoI's contribution with the Qwen team's prior GRPO. New plan keeps the matched-compute story honest. |
 | D4 | GSM8K + MATH joint train; AIME24 + OlympiadBench + MATH-500 OOD | Verifier-scorable; cascade Stage 0 needs verifiable answers |
 | D5 | verl (Volcengine) as the RL framework | Cleanly supports custom advantage hooks; TRL is too rigid |
 
@@ -28,6 +28,7 @@ Design is frozen in two documents in the parent directory:
 
 | Check | Pass | Marginal | Fail |
 |---|---|---|---|
+| Group-variance fraction at step 0 (`sft_warmup_plan.md` §5) | `≥ 0.5` | (no marginal band) | `< 0.5` → wrong starting policy; switch `π_ref` (exit code 6) |
 | Concordance MI | `> 0.3` bits | `0.15`–`0.3` → NLI fallback | `≤ 0.15` → Plan B (§8 of plan) |
 | `ρ(s_2, Var_{a~π}(Q^π))` 95% CI lower bound | `≥ ρ_gate` | straddles `ρ_gate` | below |
 | κ | `≥ 3` | `2`–`3` | `< 2` (paper pivots to efficiency headline) |

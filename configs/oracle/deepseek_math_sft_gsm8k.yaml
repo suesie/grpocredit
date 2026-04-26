@@ -1,0 +1,23 @@
+extends: ../base_qwen_math.yaml
+
+# Phase A oracle on VinePPO's GSM8K-SFT'd DeepSeekMath checkpoint
+# (`realtreetune/deepseekmath-7b-sft-GSM8K`). Sibling of `deepseek_math_sft.yaml`
+# (the MATH-v2 variant). Per `research_plan/sft_warmup_plan.md` §3.B and §4.1,
+# both DeepSeekMath SFT'd checkpoints are headline RL starting policies — the
+# task-specific split is what VinePPO themselves used (one RL run per dataset).
+name: oracle_deepseekmath_sft_gsm8k
+output_dir: experiments/oracle/deepseekmath_sft_gsm8k
+
+model:
+  name_or_path: realtreetune/deepseekmath-7b-sft-GSM8K
+  dtype: bfloat16
+  trust_remote_code: true
+
+data:
+  train_datasets: [gsm8k]             # GSM8K (matches the SFT'd variant)
+  eval_datasets: [gsm8k]
+  prompt_template: math_instruct      # see deepseek_math_sft.yaml caveat
+
+wandb:
+  tags: [phase_a, oracle, deepseekmath_sft_gsm8k, headline_rl_init]
+  job_type: oracle

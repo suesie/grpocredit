@@ -1,0 +1,33 @@
+extends: ../base_qwen_math.yaml
+
+# Phase A oracle on `Qwen2.5-Math-7B-Instruct` — used as a **saturation
+# ceiling**, NOT as an RL starting policy. Per
+# `research_plan/sft_warmup_plan.md` §1 (lines 16-22) and §4.4 (lines 213-218),
+# Qwen2.5-Math-7B-Instruct is already SFT+GRPO trained by the Qwen team with
+# `Qwen2.5-Math-RM-72B` as the reward model. Starting our RL on top of it would
+# be "RL on top of RL" and conflate VoI's contribution with additional GRPO
+# updates of any flavor.
+#
+# Why we still run the oracle on it: the plan §5 group-variance check produces
+# a paper-grade figure ("fraction of GRPO groups with informative advantage at
+# step 0 across starting policies", §5 line 254). On Qwen-Instruct that fraction
+# is expected to be very low (≈34% per §1: 0.95 pass@1 → ~66% degenerate groups
+# at G=8). That measurement directly motivates the VoI framing: VoI is most
+# valuable precisely when informative groups are scarce.
+#
+# DO NOT use this checkpoint as an RL `π_ref` for the headline experiments.
+# Headline RL init lives in `deepseek_math_sft.yaml` / `deepseek_math_sft_gsm8k.yaml`.
+name: oracle_qwen_math_instruct_saturation_ceiling
+output_dir: experiments/oracle/qwen_math_instruct_saturation_ceiling
+
+model:
+  name_or_path: Qwen/Qwen2.5-Math-7B-Instruct
+
+data:
+  train_datasets: [math]              # MATH for trajectory generation
+  eval_datasets: [math, gsm8k]
+  prompt_template: math_instruct      # Qwen chat template via tokenizer
+
+wandb:
+  tags: [phase_a, oracle, qwen_math_instruct, saturation_ceiling]
+  job_type: oracle

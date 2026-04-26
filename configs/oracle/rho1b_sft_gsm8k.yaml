@@ -1,0 +1,34 @@
+extends: ../base_qwen_math.yaml
+
+# Phase A oracle on VinePPO's small-scale published checkpoint (1.4B params).
+# rho-1b-sft-GSM8K is GSM8K-fine-tuned, so this run uses GSM8K only — using
+# MATH would push the policy way out of its training distribution and the
+# Q^π-variance numbers would be noise.
+#
+# At 1.4B, this run is the cheapest of the three; useful for fast iteration
+# on the oracle code path before scaling to the 7B configs.
+name: oracle_rho1b_sft_gsm8k
+output_dir: experiments/oracle/rho1b_sft_gsm8k
+
+model:
+  name_or_path: realtreetune/rho-1b-sft-GSM8K
+  dtype: bfloat16
+  trust_remote_code: true
+
+data:
+  train_datasets: [gsm8k]             # GSM8K only — model was SFT'd on it
+  eval_datasets: [gsm8k]
+  prompt_template: math_instruct      # tokenizer chat template if available;
+                                      # see runbook caveat about VinePPO's
+                                      # bare "Question: … Answer:" format.
+
+# Smaller model → smaller per-rollout cost; we can afford the same K=32 forced-
+# action rollouts but on a wider trajectory budget if you want richer position
+# curves. Defaults below match the 7B configs for cross-model comparability.
+
+# Operationally cheaper, so consider running this first to flush bugs before
+# the 7B configs eat real GPU time.
+
+wandb:
+  tags: [phase_a, oracle, rho1b_sft_gsm8k]
+  job_type: oracle
