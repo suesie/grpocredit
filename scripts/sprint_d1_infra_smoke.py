@@ -42,6 +42,12 @@ from grpocredit.oracle.group_variance import (  # noqa: E402
     compute_group_variance_report,
     grouped_rewards_from_runner_output,
 )
+from grpocredit.oracle.rollout_diversity import (  # noqa: E402
+    RolloutDiversityError,
+    assert_diverse_rollouts,
+    diversity_probe,
+)
+from grpocredit.oracle.stop_gate import classify_stop_gate  # noqa: E402
 from grpocredit.rollout.datasets import load_prompts  # noqa: E402
 from grpocredit.rollout.verifier import MathVerifier  # noqa: E402
 from grpocredit.voi.stage2_semantic import Stage2Scorer  # noqa: E402
@@ -75,12 +81,41 @@ def main(
     group_variance_G: int = typer.Option(
         8, help="Group size G for the §5 group-variance gate (default 8 = main GRPO size)."
     ),
+    group_variance_split: str = typer.Option(
+        "test",
+        help=(
+            "Dataset split for the §5 group-variance gate. "
+            "Default 'test' because the runbook §2.1 target bands "
+            "(rho-1b ≈ 0.60–0.85, DeepSeek-SFT'd ≈ 0.85–0.95, "
+            "Qwen-Instruct ≈ 0.30–0.40) were calibrated against "
+            "VinePPO's test-split pass@1 numbers. Measuring on 'train' "
+            "biases fraction_informative downward for SFT'd models "
+            "because they saturate in-sample (rho-1b on GSM8K train "
+            "gives pass@1≈0.58 vs 0.35 on test → too many groups "
+            "collapse to all-correct). Use 'train' if you specifically "
+            "want an 'in-sample RL signal budget' measurement."
+        ),
+    ),
     stop_gate_min_group_variance_frac: float = typer.Option(
         0.5,
         help=(
             "§5 gate: fraction of G-groups with informative (Var(r) > 0) reward. "
             "Below this, RL on this `π_ref` is a bad bet — see "
             "research_plan/sft_warmup_plan.md §5 for the reasoning."
+        ),
+    ),
+    proceed_on_policy_gate_fail: bool = typer.Option(
+        False,
+        "--proceed-on-policy-gate-fail",
+        help=(
+            "If set, a group-variance gate failure alone is NOT treated as a "
+            "stop-gate — the script exits 0 after loudly logging the failure "
+            "to wandb and disk. Infra failures (boundaries_mean < threshold "
+            "or verifier_accuracy < threshold) still exit non-zero because "
+            "those are bugs, not policy-quality signals. Use this for "
+            "intentionally-weak starting policies (e.g. rho-1b as a "
+            "fast-iteration debug policy, per plan §3.A) where you want "
+            "Day 2/3 oracle numbers despite a borderline gate."
         ),
     ),
 ) -> None:
@@ -93,12 +128,10 @@ def main(
                             extra_config={"sprint_day": 1})
 
     # ── 1. Load a small math dataset for trajectory generation ─────
-    log.info("Loading %d MATH train prompts", n_trajectories)
-    prompts = load_prompts(
-        cfg.data.train_datasets[0] if cfg.data.train_datasets else "math",
-        split="train",
-        n=n_trajectories,
-    )
+    traj_dataset = cfg.data.train_datasets[0] if cfg.data.train_datasets else "math"
+    log.info("Loading %d %s[train] prompts for trajectory generation",
+             n_trajectories, traj_dataset)
+    prompts = load_prompts(traj_dataset, split="train", n=n_trajectories)
     log.info("Loaded %d prompts", len(prompts))
 
     # Lazy-import vLLM — environment check
@@ -117,6 +150,47 @@ def main(
         build_prompts,
         detect_all_boundaries,
         results_to_trajectories,
+    )
+
+    # ── 1b. Rollout-diversity sentinel ──────────────────────────────
+    # Cheap pre-gate: sample G=4 short rollouts on 8 prompts and assert the
+    # runner is not silently collapsing to duplicates. See the failure mode
+    # documented in `grpocredit.rollout.vllm_runner`'s module docstring and
+    # tracked in `oracle.rollout_diversity.assert_diverse_rollouts`. If this
+    # trips, the 256×G group-variance gate below would be meaningless — bail
+    # with a clear error rather than burn GPU time on a rigged probe.
+    log.info("Rollout-diversity sentinel: 8 prompts × G=4")
+    probe_src = prompts[: min(8, len(prompts))]
+    probe_formatted = build_prompts(probe_src, tokenizer, template=cfg.data.prompt_template)
+    try:
+        probe_texts = diversity_probe(
+            runner,
+            probe_prompts=probe_formatted,
+            n_per_prompt=4,
+            max_new_tokens=64,
+            seed=cfg.seed + 13,  # dropped inside the runner for n>1; see docs
+        )
+        diversity_report = assert_diverse_rollouts(probe_texts)
+    except RolloutDiversityError as e:
+        log.error("%s", e)
+        wandb_run.log_summary(
+            fatal_error=str(e),
+            rollout_diversity_failed=True,
+        )
+        wandb_run.finish(exit_code=7)
+        raise typer.Exit(7) from e
+    log.info(
+        "Rollout-diversity sentinel PASS: mean_unique_fraction=%.3f, "
+        "all_identical=%d/%d",
+        diversity_report.mean_unique_fraction,
+        diversity_report.n_groups_all_identical,
+        diversity_report.n_groups,
+    )
+    wandb_run.log(
+        {
+            f"rollout_diversity/{k}": v
+            for k, v in diversity_report.to_dict().items()
+        }
     )
 
     # ── 2. Generate trajectories ───────────────────────────────────
@@ -185,7 +259,18 @@ def main(
         pass
 
     # ── 4. Verifier sanity check (200 MATH problems) ───────────────
-    log.info("Verifier sanity check on %d MATH solutions (ground truth)", verifier_probe_size)
+    # NOTE: intentionally always probes the MATH dataset regardless of
+    # the config's `train_datasets`. This is a cross-verifier sanity
+    # check — we want to know that `MathVerifier.score(gt_solution,
+    # gt_answer)` agrees with itself on MATH's `\boxed{}` convention,
+    # which is the hardest extraction path. If this passes, the verifier
+    # is correctly wired. A failure here means `math_verify` is broken
+    # in the env, not a model/policy issue.
+    log.info(
+        "Verifier sanity check on %d MATH solutions (ground truth, "
+        "cross-dataset — not affected by config.data.train_datasets)",
+        verifier_probe_size,
+    )
     probe = load_prompts("math", split="train", n=verifier_probe_size)
     correct = 0
     total = 0
@@ -259,16 +344,34 @@ def main(
     # ("informative-group fraction at step 0 across starting policies").
     gv_report_dict = None
     if group_variance_probe_prompts > 0:
+        gv_dataset = (
+            cfg.data.train_datasets[0] if cfg.data.train_datasets else "math"
+        )
         log.info(
-            "Group-variance gate: %d prompts × G=%d rollouts",
+            "Group-variance gate: %d prompts × G=%d rollouts on %s[%s]",
             group_variance_probe_prompts,
             group_variance_G,
+            gv_dataset,
+            group_variance_split,
         )
-        gv_prompts = load_prompts(
-            cfg.data.train_datasets[0] if cfg.data.train_datasets else "math",
-            split="train",
-            n=group_variance_probe_prompts,
-        )
+        try:
+            gv_prompts = load_prompts(
+                gv_dataset,
+                split=group_variance_split,
+                n=group_variance_probe_prompts,
+            )
+        except Exception as e:
+            log.warning(
+                "load_prompts(%s, split=%s) failed (%s); falling back to 'train' "
+                "— this is expected for datasets that only ship one split "
+                "(e.g. AIME, MATH-500).",
+                gv_dataset,
+                group_variance_split,
+                e,
+            )
+            gv_prompts = load_prompts(
+                gv_dataset, split="train", n=group_variance_probe_prompts
+            )
         gv_formatted = build_prompts(
             gv_prompts, tokenizer, template=cfg.data.prompt_template
         )
@@ -318,14 +421,21 @@ def main(
         )
 
     # ── Stop-gate evaluation ───────────────────────────────────────
-    gv_fail = (
-        gv_report_dict is not None and not gv_report_dict["pass"]
+    # Infra vs policy classification lives in `grpocredit.oracle.stop_gate`
+    # (see its module docstring for the full rationale). Summary:
+    #   exit 1  = infra  (detector_max==0 or verifier_acc<min) — unwaivable
+    #   exit 6  = policy (boundaries_mean<min or §5 gate fail) — waivable
+    #   exit 0  = pass, or policy-only fail with the override set
+    decision = classify_stop_gate(
+        boundaries_mean=mean_b,
+        boundaries_max=max_b,
+        verifier_accuracy=verifier_acc,
+        gv_pass=(gv_report_dict["pass"] if gv_report_dict is not None else None),
+        min_boundaries=stop_gate_min_boundaries,
+        min_verifier_accuracy=stop_gate_min_verifier_acc,
+        proceed_on_policy_gate_fail=proceed_on_policy_gate_fail,
     )
-    stop_gate_triggered = (
-        mean_b < stop_gate_min_boundaries
-        or verifier_acc < stop_gate_min_verifier_acc
-        or gv_fail
-    )
+
     gate_report = {
         "n_trajectories": n_trajectories_actual,
         "boundaries_mean": mean_b,
@@ -333,8 +443,12 @@ def main(
         "boundaries_max": max_b,
         "verifier_accuracy": verifier_acc,
         "group_variance": gv_report_dict,
-        "stop_gate_triggered": stop_gate_triggered,
-        "pass": not stop_gate_triggered,
+        "infra_fail": decision.infra_fail,
+        "policy_fail": decision.policy_fail,
+        "proceed_on_policy_gate_fail": decision.proceed_on_policy_gate_fail,
+        "stop_gate_reasons": list(decision.reasons),
+        "stop_gate_triggered": decision.effective_stop,
+        "pass": not decision.effective_stop,
     }
     write_json(out_dir / "day1_summary.json", gate_report)
     wandb_run.log_summary(**gate_report)
@@ -344,11 +458,41 @@ def main(
     for k, v in gate_report.items():
         print(f"  {k}: {v}")
     print("-" * 40)
-    print("PASS" if not stop_gate_triggered else "STOP-GATE TRIGGERED — fix infra before Day 2")
+    if decision.reasons:
+        print("Gate-check triggers:")
+        for r in decision.reasons:
+            print(f"  - {r}")
+    if decision.effective_stop:
+        if decision.infra_fail:
+            print(
+                "STOP-GATE TRIGGERED (INFRA) — detector or verifier is broken. "
+                "Fix the code/config before Day 2. --proceed-on-policy-gate-fail "
+                "does NOT waive this."
+            )
+        else:
+            print(
+                "STOP-GATE TRIGGERED (POLICY) — one of {short CoTs, low §5 "
+                "fraction_informative}. These are distribution properties of "
+                "π_ref, not code bugs. Re-run with --proceed-on-policy-gate-fail "
+                "to collect Day 2/3 oracle numbers anyway (recommended for "
+                "rho-1b and other intentionally-weak debug policies)."
+            )
+    elif decision.policy_fail and decision.proceed_on_policy_gate_fail:
+        print(
+            "POLICY GATE FAILED but --proceed-on-policy-gate-fail was set; "
+            "continuing to Day 2. The failure is recorded in day1_summary.json "
+            "and wandb summary; Day 3 GATE_REPORT.md will still flag it."
+        )
+    else:
+        print("PASS")
 
-    wandb_run.finish(exit_code=1 if stop_gate_triggered else 0)
-    if stop_gate_triggered:
-        raise typer.Exit(1)
+    # Exit codes match SERVER2_RUNBOOK.md §2 table:
+    #   0 = all pass (or policy-fail overridden)
+    #   1 = infra fail (detector broken or verifier broken)
+    #   6 = policy fail (short CoTs or group-variance gate; overrideable)
+    wandb_run.finish(exit_code=decision.exit_code)
+    if decision.exit_code != 0:
+        raise typer.Exit(decision.exit_code)
 
 
 if __name__ == "__main__":

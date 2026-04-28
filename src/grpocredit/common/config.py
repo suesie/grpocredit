@@ -53,6 +53,13 @@ class RolloutConfig(_Base):
     # Lookahead rollouts for Stage 2
     lookahead_max_new_tokens: int = 30
     lookahead_temperature: float = 1.0
+    # When True AND `n > 1`, the runner fans out into N single-sample
+    # requests with seeds `[base, base+1, …]` (VinePPO convention —
+    # bit-reproducible, slower). When False (default), the runner drops
+    # the per-request seed on `n > 1` calls (verl/TRL/OpenRLHF convention
+    # — faster, not bit-reproducible). See the `vllm_runner` module
+    # docstring and runbook §2.3 for the full rationale.
+    deterministic_n: bool = False
 
 
 class BoundaryConfig(_Base):

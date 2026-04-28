@@ -13,7 +13,7 @@ license = { text = "MIT" }
 
 dependencies = [
     "torch>=2.1",
-    "transformers>=4.40",
+    "transformers>=4.40,<5",
     "accelerate>=0.29",
     "datasets>=2.18",
     "sentence-transformers>=2.7",

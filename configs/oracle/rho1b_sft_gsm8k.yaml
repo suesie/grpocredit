@@ -18,9 +18,20 @@ model:
 data:
   train_datasets: [gsm8k]             # GSM8K only — model was SFT'd on it
   eval_datasets: [gsm8k]
-  prompt_template: math_instruct      # tokenizer chat template if available;
-                                      # see runbook caveat about VinePPO's
-                                      # bare "Question: … Answer:" format.
+  prompt_template: vineppo_math_task  # "[MATH_TASK] Problem:\n{q}\n\nSolution:" —
+                                      # the template rho-1b was SFT'd on.
+                                      # See grpocredit.rollout.datasets.
+                                      # _apply_vineppo_math_task for lineage.
+
+# VinePPO eval-time sampling settings for rho-1b (matches the recipe this
+# checkpoint was published with; deviating drops pass@1 by 5-6×, which
+# crushes the §5 group-variance gate). Base config defaults to
+# temp=0.9 / top_p=0.95 / no-stop — those are Qwen-Instruct's regime and are
+# the right thing for `configs/oracle/qwen_math_instruct.yaml`, not here.
+rollout:
+  temperature: 0.35
+  top_p: 0.9
+  stop: ["\n\n\nProblem:"]
 
 # Smaller model → smaller per-rollout cost; we can afford the same K=32 forced-
 # action rollouts but on a wider trajectory budget if you want richer position

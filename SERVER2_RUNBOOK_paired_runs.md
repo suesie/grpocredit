@@ -263,13 +263,18 @@ Single 80 GB GPU, rho-1b GSM8K (everything cheap):
   GRPO used here — same trainer as VinePPO so curves are bit-for-bit
   matched-framework. The plan's Phase B2a (verl GRPO + VoI hooks) is a
   separate sprint; not built.
-- **rho-1b prompt template drift**: `configs/oracle/rho1b_sft_gsm8k.yaml`
-  uses `prompt_template: math_instruct` (generic fallback); VinePPO's GRPO
-  trains under bare `Question: …\nAnswer:`. For the SFT-init oracle this is
-  acceptable (κ / ρ are correlations, robust to mild distribution shift).
-  For the iter oracle the mismatch is bigger. If iter-1 κ looks anomalously
-  low while §4.1's κ looks fine, port VinePPO's GSM8K template into
-  `grpocredit/rollout/datasets.py` (search `TEMPLATES = {`) and re-run §4.2.
+- ~~**rho-1b prompt template drift**~~ **RESOLVED.** All three VinePPO-SFT'd
+  oracle configs (`rho1b_sft_gsm8k.yaml`, `deepseek_math_sft.yaml`,
+  `deepseek_math_sft_gsm8k.yaml`) now use `prompt_template: vineppo_math_task`
+  (`"[MATH_TASK] Problem:\n{q}\n\nSolution:"`) + VinePPO's eval-time
+  sampling (`temperature: 0.35`, `top_p: 0.9`, `stop: ["\n\n\nProblem:"]`) —
+  exactly matching the template those checkpoints were SFT'd on and the
+  template VinePPO's GRPO trainer continues to train under. This also
+  makes §4.2 iter-oracles distribution-aligned automatically, since
+  `run_oracle_on_grpo_iter.sh` generates an overlay that `extends:` the
+  base oracle YAML and only replaces `model.name_or_path`. See
+  `SERVER2_RUNBOOK.md` §2.2 (RESOLVED) and
+  `tests/test_prompt_templates.py` for the pinning tests.
 - **Iter checkpoints are 1-based**: there is no `iter_0000`. iter -1 = SFT'd
   init (§4.1); iter 1..N = §4.2. The wrapper lists available dirs on miss.
 - **HF dump has no tokenizer**: VinePPO's `_save_hf_pretrained` saves model

@@ -18,15 +18,19 @@ model:
 data:
   train_datasets: [math]              # MATH (matches the SFT'd variant)
   eval_datasets: [math]
-  prompt_template: math_instruct      # tokenizer chat template if exposed,
-                                      # otherwise falls back to System/User/Assistant
-                                      # (see runbook caveat — DeepSeekMath SFT
-                                      # uses a different format)
+  prompt_template: vineppo_math_task  # "[MATH_TASK] Problem:\n{q}\n\nSolution:"
+                                      # — same template VinePPO SFT'd this
+                                      # checkpoint with, applied to both GSM8K
+                                      # and MATH per their
+                                      # prompt_library/generic_MATH_step_by_step.jsonnet.
 
-# DeepSeekMath SFT format expects \boxed{} answers; verifier defaults still apply.
-# If oracle κ comes out anomalously low here while Qwen-Instruct (saturation
-# ceiling) looks plausible, suspect a prompt-format mismatch and try the
-# explicit DeepSeekMath template (see plan §6 line 271-277 caveat list).
+# VinePPO eval-time sampling settings (temperature 0.35, top_p 0.9,
+# stop '\n\n\nProblem:') — matches the checkpoint's training distribution.
+# Verifier still extracts \boxed{} answers from DeepSeekMath outputs as before.
+rollout:
+  temperature: 0.35
+  top_p: 0.9
+  stop: ["\n\n\nProblem:"]
 
 wandb:
   tags: [phase_a, oracle, deepseekmath_sft_math_v2, headline_rl_init]

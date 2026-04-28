@@ -22,8 +22,8 @@ else
     # this script lives at grpocredit/scripts/sanity_check_server2.sh
     ROOT="$(cd "$HERE/../.." && pwd)"
 fi
-[ -d "$ROOT/VinePPO" ] && [ -d "$ROOT/grpocredit" ] || {
-    echo "FAIL: could not locate VinePPO/ and grpocredit/ under $ROOT" >&2
+[ -d "$ROOT/VinePPO-grpo" ] && [ -d "$ROOT/grpocredit" ] || {
+    echo "FAIL: could not locate VinePPO-grpo/ and grpocredit/ under $ROOT" >&2
     exit 1
 }
 echo "[sanity] repo root: $ROOT"
@@ -57,7 +57,7 @@ print('  vllm', vllm.__version__)
 print('  deepspeed', deepspeed.__version__)
 print('  transformers', transformers.__version__)
 "
-( cd "$ROOT/VinePPO" && PYTHONPATH=src pytest tests/test_grpo_advantage.py -q )
+( cd "$ROOT/VinePPO-grpo" && PYTHONPATH=src pytest tests/test_grpo_advantage.py -q )
 conda deactivate
 
 # 3. grpocredit env: imports + full unit-test suite + load_config smoke.
@@ -73,6 +73,39 @@ cfg = load_config('$ROOT/grpocredit/configs/oracle/rho1b_sft_gsm8k.yaml')
 assert cfg.model.name_or_path == 'realtreetune/rho-1b-sft-GSM8K', cfg.model.name_or_path
 print('  load_config(rho1b_sft_gsm8k.yaml) OK')
 "
+
+# 3b. Make scripts/ importable as a package. Two things have to be true:
+#       (1) no other package on sys.path is shadowing the name `scripts`, and
+#       (2) the grpocredit repo root is on sys.path so our scripts/ tree is
+#           reachable as a (namespace) package.
+#     pip install -e . only adds src/grpocredit, not the sibling scripts/.
+#     gguf 0.10.0 (a transitive dep of vLLM's GGUF model loader) ships a
+#     top-level `scripts/` package containing its CLI helpers (gguf_dump etc.)
+#     — that's an upstream packaging bug that masks any project's own
+#     scripts/. We don't use those CLIs, so we delete the shadow. Both fixes
+#     are idempotent — re-running this script is safe.
+GRPOCREDIT_ROOT="$ROOT/grpocredit"
+SITE_PACKAGES="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+
+# (1) remove the gguf scripts/ shadow if it has reappeared (e.g. after
+#     reinstalling vllm / gguf). We only delete a `scripts/` package whose
+#     __init__.py is owned by gguf, never a stray scripts dir of unknown
+#     origin.
+GGUF_SHADOW="$SITE_PACKAGES/scripts"
+if [ -d "$GGUF_SHADOW" ] && grep -q "gguf" "$GGUF_SHADOW/__init__.py" 2>/dev/null; then
+    echo "  [fix] removing gguf's top-level scripts/ shadow at $GGUF_SHADOW"
+    rm -rf "$GGUF_SHADOW"
+fi
+
+# (2) drop a .pth so the repo root is on sys.path at every Python startup.
+PTH_FILE="$SITE_PACKAGES/grpocredit_repo.pth"
+if ! grep -qxF "$GRPOCREDIT_ROOT" "$PTH_FILE" 2>/dev/null; then
+    echo "  [fix] installing $PTH_FILE -> $GRPOCREDIT_ROOT"
+    echo "$GRPOCREDIT_ROOT" > "$PTH_FILE"
+fi
+
+python -c "from scripts._shared import build_prompts; print('  scripts._shared importable')"
+
 ( cd "$ROOT/grpocredit" && pytest -q )
 conda deactivate
 
@@ -102,6 +135,6 @@ need_one "Qwen/Qwen2.5-Math-7B-Instruct"          optional
 echo
 echo "[sanity] PASS — server2 looks ready."
 echo "  Next:"
-echo "    cd VinePPO && bash scripts/launch_server2_vineppo.sh rho1bSft2 GSM8K"
-echo "    cd VinePPO && bash scripts/launch_server2_grpo.sh    rho1bSft2 GSM8K"
+echo "    cd VinePPO-grpo && bash scripts/launch_server2_vineppo.sh rho1bSft2 GSM8K"
+echo "    cd VinePPO-grpo && bash scripts/launch_server2_grpo.sh    rho1bSft2 GSM8K"
 echo "    cd grpocredit && bash scripts/run_oracle_on_grpo_iter.sh rho1bSft2 GSM8K 0"

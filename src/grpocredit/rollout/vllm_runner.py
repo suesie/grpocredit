@@ -18,6 +18,27 @@ Windows note: vLLM doesn't install on native Windows — the `_maybe_import_vllm
 helper raises a clear error so Windows dev machines can still `import
 grpocredit.rollout.vllm_runner` for static analysis. Actual runs happen on a
 Linux GPU node.
+
+Per-request `seed` contract
+---------------------------
+
+A fixed `SamplingParams.seed` combined with `n > 1` and
+`enable_prefix_caching=True` collapses all samples to near-duplicates when
+prompts share a prefix — the per-request RNG is seeded once, and a cached
+prefill leaves the N samples on the same trajectory. That was the root
+cause of `mean_group_reward_std=0.0` on `rho-1b-sft-GSM8K` (runbook §2.3).
+
+`_sampling_params` enforces the ecosystem convention:
+
+* `n == 1`: pass the supplied seed through (useful for `policy_probs_at`).
+* `n > 1`, `rollout_cfg.deterministic_n=False` (default, verl/TRL/OpenRLHF
+  convention): drop the per-request seed; the engine seed set at
+  `LLM(..., seed=...)` construction is still honoured.
+* `n > 1`, `rollout_cfg.deterministic_n=True` (VinePPO convention): use
+  `_generate_deterministic_n` to fan out into `n` single-sample requests
+  with seeds `[base, base+1, …]`. Bit-reproducible, ~N× decode passes.
+
+All three rollout entry points route through `_sampling_params`.
 """
 
 from __future__ import annotations
@@ -103,6 +124,7 @@ class VLLMRolloutRunner:
     rollout_cfg: RolloutConfig
     _llm: Any = field(default=None, init=False, repr=False)
     _tokenizer: Any = field(default=None, init=False, repr=False)
+    _warned_seed_dropped: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         vllm = _maybe_import_vllm()
@@ -147,17 +169,88 @@ class VLLMRolloutRunner:
         logprobs: int | None = 1,
         stop: list[str] | None = None,
     ) -> Any:
+        """Build a `vllm.SamplingParams` that obeys the seed contract.
+
+        See the module docstring for the full rationale. Summary:
+        * `n == 1`  → pass the supplied (or config) seed through.
+        * `n  > 1`  → drop the per-request seed and let the engine RNG
+          advance (verl / TRL / OpenRLHF convention). Callers who need
+          bit-reproducibility for `n > 1` should use
+          `_generate_deterministic_n` instead, which fans out into `n`
+          separate `n=1` requests each with a distinct seed (VinePPO
+          `num_expansion_rounds` pattern).
+        """
         vllm = _maybe_import_vllm()
+        effective_seed: int | None
+        if n <= 1:
+            effective_seed = seed if seed is not None else self.rollout_cfg.seed
+        else:
+            effective_seed = None
+            if seed is not None and not self._warned_seed_dropped:
+                # Log-once so users running with a fixed per-request seed and
+                # `n > 1` get a clear signal that the seed was intentionally
+                # dropped rather than silently honoured. Callers who genuinely
+                # want reproducibility should flip `rollout.deterministic_n`.
+                log.warning(
+                    "Dropping per-request seed=%s on n=%d sampling call; "
+                    "set `rollout.deterministic_n=True` for a VinePPO-style "
+                    "seed-rotated fan-out, or rely on the engine-level seed "
+                    "(%s) set at LLM construction.",
+                    seed,
+                    n,
+                    self.rollout_cfg.seed,
+                )
+                self._warned_seed_dropped = True
         return vllm.SamplingParams(
             n=n,
             max_tokens=max_new_tokens or self.rollout_cfg.max_new_tokens,
             temperature=temperature if temperature is not None else self.rollout_cfg.temperature,
             top_p=top_p if top_p is not None else self.rollout_cfg.top_p,
             top_k=self.rollout_cfg.top_k,
-            seed=seed if seed is not None else self.rollout_cfg.seed,
+            seed=effective_seed,
             logprobs=logprobs,
             stop=stop or self.rollout_cfg.stop,
         )
+
+    def _generate_deterministic_n(
+        self,
+        *,
+        requests: list[Any],
+        n: int,
+        base_seed: int,
+        max_new_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        logprobs: int | None = 1,
+        stop: list[str] | None = None,
+    ) -> list[list[Any]]:
+        """VinePPO-style fan-out: issue `n` single-sample requests per input
+        with seeds `[base_seed, base_seed+1, …, base_seed+n-1]`.
+
+        Returns a list-of-lists aligned with `requests`: for each input, a list
+        of `n` per-sample vLLM completion outputs (one per seeded request).
+
+        With `enable_prefix_caching=True` this is cheap — prefill is cached
+        after the first seed, so the extra cost is ~n decode passes per input.
+        Without prefix caching it is O(n) in total prefill FLOPs. Callers who
+        don't need bit-reproducible per-sample provenance should use the
+        seed-dropped `n > 1` path via `_sampling_params` instead.
+        """
+        per_request_outputs: list[list[Any]] = [[] for _ in requests]
+        for sample_idx in range(n):
+            params = self._sampling_params(
+                n=1,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                seed=base_seed + sample_idx,
+                logprobs=logprobs,
+                stop=stop,
+            )
+            outs = self._llm.generate(requests, params, use_tqdm=False)
+            for i, out in enumerate(outs):
+                per_request_outputs[i].append(out.outputs[0])
+        return per_request_outputs
 
     def _rolloutresult_from_vllm(
         self, prompt: str, prompt_ids: list[int], completion: Any
@@ -213,6 +306,26 @@ class VLLMRolloutRunner:
         top_p: float | None = None,
         seed: int | None = None,
     ) -> list[list[RolloutResult]]:
+        if n_per_prompt > 1 and self.rollout_cfg.deterministic_n:
+            base_seed = seed if seed is not None else self.rollout_cfg.seed
+            completions_by_prompt = self._generate_deterministic_n(
+                requests=prompts,
+                n=n_per_prompt,
+                base_seed=base_seed,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+            # We need `prompt_token_ids` per prompt for RolloutResult; pull it
+            # off a 1-token cheap tokenize rather than a second generate call.
+            results: list[list[RolloutResult]] = []
+            for prompt, completions in zip(prompts, completions_by_prompt, strict=False):
+                prompt_ids = self.tokenize(prompt)
+                results.append(
+                    [self._rolloutresult_from_vllm(prompt, prompt_ids, c) for c in completions]
+                )
+            return results
+
         params = self._sampling_params(
             n=n_per_prompt,
             max_new_tokens=max_new_tokens,
@@ -221,7 +334,7 @@ class VLLMRolloutRunner:
             seed=seed,
         )
         outputs = self._llm.generate(prompts, params, use_tqdm=False)
-        results: list[list[RolloutResult]] = []
+        results = []
         for prompt, out in zip(prompts, outputs, strict=False):
             prompt_ids = list(out.prompt_token_ids)
             results.append(
@@ -241,6 +354,27 @@ class VLLMRolloutRunner:
     ) -> list[list[RolloutResult]]:
         """Sample `n_continuations` short continuations from each prefix."""
         vllm = _maybe_import_vllm()
+        prompts = [vllm.TokensPrompt(prompt_token_ids=list(ids)) for ids in prefix_token_ids]
+
+        if n_continuations > 1 and self.rollout_cfg.deterministic_n:
+            base_seed = seed if seed is not None else self.rollout_cfg.seed
+            completions_by_prefix = self._generate_deterministic_n(
+                requests=prompts,
+                n=n_continuations,
+                base_seed=base_seed,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                logprobs=1,
+            )
+            results: list[list[RolloutResult]] = []
+            for ids, completions in zip(prefix_token_ids, completions_by_prefix, strict=False):
+                detok = self.detokenize(ids)
+                results.append(
+                    [self._rolloutresult_from_vllm(detok, list(ids), c) for c in completions]
+                )
+            return results
+
         params = self._sampling_params(
             n=n_continuations,
             max_new_tokens=max_new_tokens,
@@ -249,9 +383,8 @@ class VLLMRolloutRunner:
             seed=seed,
             logprobs=1,
         )
-        prompts = [vllm.TokensPrompt(prompt_token_ids=list(ids)) for ids in prefix_token_ids]
         outputs = self._llm.generate(prompts, params, use_tqdm=False)
-        results: list[list[RolloutResult]] = []
+        results = []
         for ids, out in zip(prefix_token_ids, outputs, strict=False):
             detok = self.detokenize(ids)
             results.append(
@@ -273,6 +406,38 @@ class VLLMRolloutRunner:
         """For each first-action, roll out n_per_action continuations from
         `prefix + [first_token]`."""
         vllm = _maybe_import_vllm()
+        tokens_prompts = [
+            vllm.TokensPrompt(prompt_token_ids=list(prefix_token_ids) + [a])
+            for a in first_token_ids
+        ]
+        detok_prefix = self.detokenize(list(prefix_token_ids))
+
+        if n_per_action > 1 and self.rollout_cfg.deterministic_n:
+            base_seed = seed if seed is not None else self.rollout_cfg.seed
+            completions_by_action = self._generate_deterministic_n(
+                requests=tokens_prompts,
+                n=n_per_action,
+                base_seed=base_seed,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                logprobs=1,
+            )
+            results: list[list[RolloutResult]] = []
+            for first_tid, completions in zip(first_token_ids, completions_by_action, strict=False):
+                effective_prefix = detok_prefix + self.detokenize([first_tid])
+                per_action: list[RolloutResult] = []
+                for c in completions:
+                    rr = self._rolloutresult_from_vllm(
+                        effective_prefix,
+                        list(prefix_token_ids) + [first_tid],
+                        c,
+                    )
+                    rr.extra["forced_first_token_id"] = first_tid
+                    per_action.append(rr)
+                results.append(per_action)
+            return results
+
         params = self._sampling_params(
             n=n_per_action,
             max_new_tokens=max_new_tokens,
@@ -281,13 +446,8 @@ class VLLMRolloutRunner:
             seed=seed,
             logprobs=1,
         )
-        tokens_prompts = [
-            vllm.TokensPrompt(prompt_token_ids=list(prefix_token_ids) + [a])
-            for a in first_token_ids
-        ]
         outputs = self._llm.generate(tokens_prompts, params, use_tqdm=False)
-        detok_prefix = self.detokenize(list(prefix_token_ids))
-        results: list[list[RolloutResult]] = []
+        results = []
         for first_tid, out in zip(first_token_ids, outputs, strict=False):
             effective_prefix = detok_prefix + self.detokenize([first_tid])
             per_action: list[RolloutResult] = []

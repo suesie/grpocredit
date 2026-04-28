@@ -52,8 +52,23 @@ def _apply_qwen_chat_template(tokenizer: Any, question: str) -> str:
         return f"System: {SYSTEM_MATH}\n\nUser: {question}\n\nAssistant: "
 
 
+def _apply_vineppo_math_task(tokenizer: Any, question: str) -> str:
+    """VinePPO's SFT-time template for rho-1b-sft-* and deepseekmath-7b-sft-*.
+
+    Verbatim from VinePPO's `configs/prompt_library/generic_{GSM8K,MATH}_
+    step_by_step.jsonnet` and the matching SFT configs. Must be paired with
+    VinePPO's eval-time sampling (`temperature: 0.35, top_p: 0.9, stop:
+    ["\\n\\n\\nProblem:"]`) or pass@1 collapses — see runbook §2.2. The
+    tokenizer arg is unused (base LM, no chat template) and kept only for
+    `TEMPLATES` signature uniformity.
+    """
+    del tokenizer
+    return f"[MATH_TASK] Problem:\n{question}\n\nSolution:"
+
+
 TEMPLATES = {
     "math_instruct": _apply_qwen_chat_template,
+    "vineppo_math_task": _apply_vineppo_math_task,
 }
 
 

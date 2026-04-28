@@ -16,7 +16,18 @@ model:
 data:
   train_datasets: [gsm8k]             # GSM8K (matches the SFT'd variant)
   eval_datasets: [gsm8k]
-  prompt_template: math_instruct      # see deepseek_math_sft.yaml caveat
+  prompt_template: vineppo_math_task  # VinePPO's training-time template for
+                                      # deepseekmath-7b-sft-*. See
+                                      # grpocredit.rollout.datasets._apply_vineppo_math_task
+                                      # and SERVER2_RUNBOOK.md §2.2.
+
+# VinePPO eval-time sampling settings (temperature 0.35, top_p 0.9,
+# stop '\n\n\nProblem:') — matches the checkpoint's training distribution.
+# See rho1b_sft_gsm8k.yaml for the full reasoning.
+rollout:
+  temperature: 0.35
+  top_p: 0.9
+  stop: ["\n\n\nProblem:"]
 
 wandb:
   tags: [phase_a, oracle, deepseekmath_sft_gsm8k, headline_rl_init]

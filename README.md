@@ -60,6 +60,78 @@ Execution order on a fresh server2:
 
 For B1 work specifically: `SERVER2_RUNBOOK_paired_runs.md` is the one you follow top-to-bottom; the other two are subsystem references it points into. Phase A is the prerequisite that decides which starting policies are worth RL'ing on.
 
+## Config knobs worth knowing about
+
+### Verifier — check the extraction method before trusting the gate
+
+The verifier (`src/grpocredit/rollout/verifier.py`) uses a **priority-ordered
+registry** of answer extractors. Each entry is `(method_tag, extractor_fn)`
+in `_EXTRACTORS`; `extract_final_answer` runs them in order and returns the
+first non-empty result. Current registry (pinned by
+`tests/test_verifier.py::test_extractor_registry_order`):
+
+| Priority | Method tag | Convention | Used by |
+|---|---|---|---|
+| 1 | `gsm8k_hash` | `#### X` at end | GSM8K-SFT'd models (rho-1b, deepseekmath-sft-GSM8K, VinePPO's) |
+| 2 | `answer_tag` | `<answer>X</answer>` | DeepSeek-R1 and R1-distilled models |
+| 3 | `boxed` | last `\boxed{X}` | Qwen-Math-Instruct, deepseekmath-sft-MATH, any MATH-trained model |
+| 4 | `answer_is` | "(the )?(final )?answer (is\|:\|=) X" prose | most instruct-tuned models |
+| 5 | `fallback` | last numeric token | weak last-resort; method tag flags untrustworthy |
+
+> ⚠ **Extending the verifier is a first-class requirement when bringing on
+> a new model or dataset**, not a polish task. The registry today covers
+> GSM8K / MATH / AIME-24 / OlympiadBench / MATH-500 on rho-1b, DeepSeekMath-
+> SFT'd, Qwen-Math-Instruct, and R1-family outputs. Any model whose output
+> convention is not one of the five above will silently grade through the
+> `fallback` path and the §5 gate will report garbage `fraction_informative`
+> while looking superficially green. The fix is a 5-line addition to
+> `_EXTRACTORS` + a verbatim regression test + a runbook-table row —
+> workflow in `SERVER2_RUNBOOK.md` §2.4. Always run
+> `scripts/inspect_day1_rollouts.py --tokenizer <repo>` after the first
+> Day-1 smoke on any new model; if its `[aggregate] verifier extract
+> method:` line is dominated by `fallback`, stop and add an extractor
+> before anything else.
+
+> ⚠ **Multiple-choice, code-gen, and proof benchmarks do NOT fit this
+> registry** — they need a separate verifier class with the same
+> `score(response, ground_truth) -> VerifierResult` contract. The oracle
+> pipeline is verifier-agnostic, so swapping is a config knob, not a
+> refactor. See `SERVER2_RUNBOOK.md` §2.4 for the decision matrix.
+
+How this bit us in the sprint (so the mechanism is concrete): rho-1b-sft-GSM8K
+was emitting `#### 72` correctly on 100/100 rollouts, but the pre-fix
+`_ANSWER_IS_RE` also matched bare `=\s*X` in every intermediate CoT step
+and was ordered *before* `####` extraction. The verifier returned
+"24 clips in May" from `= 24 clips in May` on step 1 and scored the
+rollout wrong. Pass@1 was reported as 15 % when it was actually ~70 %.
+Caught via `scripts/inspect_day1_rollouts.py`, fixed by reordering
+priority and narrowing the `answer_is` regex. The priority order and the
+verbatim failing rollouts are now regression-tested in
+`tests/test_verifier.py::test_gsm8k_hash_beats_intermediate_equation_*`.
+
+### `rollout.deterministic_n` — leave it off
+
+> ⚠ **Do not set `rollout.deterministic_n: true` globally** unless you
+> specifically want bit-reproducible oracle tables for the paper. It loses
+> throughput — every `n > 1` rollout call becomes `n` serial single-sample
+> calls. The default (`false`) drops the per-request `SamplingParams.seed`
+> on `n > 1` calls, matching verl / TRL / OpenRLHF convention, and is
+> what every smoke-test / gate / oracle path in this repo actually needs.
+> Engine-level reproducibility (`LLM(..., seed=cfg.rollout.seed)`) is
+> always on regardless.
+
+Background, when you need it: `vLLM 0.6.4.post1 + enable_prefix_caching=True
++ a fixed per-request SamplingParams.seed + n > 1 + instruct-style shared
+prompt prefixes` is a known collapse mode — it was the root cause of the
+original `rho-1b-sft-GSM8K` Day-1 gate returning `mean_group_reward_std=0.0`
+on 256 / 256 groups. `VLLMRolloutRunner._sampling_params` enforces the fix
+at the API boundary. See `src/grpocredit/rollout/vllm_runner.py`'s module
+docstring for the full reasoning, and `SERVER2_RUNBOOK.md` §2.3 for the
+operational consequences (exit code 7 from the diversity sentinel). Turn
+`deterministic_n: true` on only when generating the final numbers you
+intend to publish, and only via a tiny overlay YAML scoped to that one
+config — never in `base_*.yaml`.
+
 ## Committed sprint decisions (do not re-litigate)
 
 | ID | Decision | Source |

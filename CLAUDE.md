@@ -84,8 +84,35 @@ configs/
   `shrinkage.mode = "none"` path is for VinePPO-style uniform K that doesn't
   need it.
 - **Verifier** is the `math-verify` PyPI package, not a VinePPO vendor.
-  Wrapped in `grpocredit.rollout.verifier.MathVerifier` with
-  boxed / answer_is / gsm8k_hash / fallback extraction priority.
+  Wrapped in `grpocredit.rollout.verifier.MathVerifier`, which runs a
+  **priority-ordered registry** of extractors in
+  `_EXTRACTORS: list[(method_tag, extractor_fn)]`. Current order
+  (most-authoritative first, pinned by `test_extractor_registry_order`):
+
+      gsm8k_hash (####)  →  answer_tag (<answer>X</answer>)
+                         →  boxed (\boxed{X})
+                         →  answer_is ("the answer is X")
+                         →  fallback (last numeric token)
+
+  **Priority ordering is load-bearing.** The pre-fix priority had `####`
+  in slot 3 behind a `=\s*<value>` heuristic; that cost rho-1b-sft-GSM8K
+  an empirical 5× pass@1 under-reporting because every CoT `=` step beat
+  `####`. If you touch `_EXTRACTORS`, run `pytest tests/test_verifier.py
+  -v` and inspect an actual `day1_rollouts.jsonl` via
+  `scripts/inspect_day1_rollouts.py` — do not trust the aggregate alone.
+
+  **New model / new dataset** — if rollouts use a convention that isn't
+  in the current registry (e.g., R1-distilled with only `<answer>` tags,
+  or a benchmark whose answer marker isn't in this list), you MUST add
+  an extractor before running oracle/gate. Check: `scripts/inspect_day1
+  _rollouts.py --aggregate` → if `verifier extract method` is dominated
+  by `fallback`, the verifier is failing silently. Workflow in
+  `SERVER2_RUNBOOK.md` §2.4 ("Extending the verifier").
+
+  **Not covered** — multiple-choice benchmarks, code-generation, proofs:
+  write a new `XXXVerifier` class with the same `score(response,
+  ground_truth) -> VerifierResult` contract rather than extending the
+  registry. The oracle pipeline only depends on that interface.
 
 ## Running the sprint
 
