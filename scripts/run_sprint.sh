@@ -15,10 +15,9 @@ echo "[sprint] Day 1 — infrastructure smoke test"
     --verifier-probe-size 200 \
     --output-dir "$OUT"
 
-echo "[sprint] Day 2A — concordance check"
+echo "[sprint] Day 2A — embedding-variance diagnostic"
 "$PYTHON" scripts/sprint_d2_concordance.py \
     --config "$CONFIG" \
-    --n-trajectories 100 \
     --output-dir "$OUT"
 
 echo "[sprint] Day 2B — Q-variance oracle"

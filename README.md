@@ -8,9 +8,9 @@ Implementation of the research proposal *Value-of-Information Allocation for GRP
 |---|---|---|
 | `common/` | configs (pydantic + YAML), wandb wrapper, shared types | `config.py` `logging.py` `types.py` `utils.py` |
 | `rollout/` | vLLM / HF rollouts with forced-token support, GSM8K / MATH loaders, sympy verifier, syntactic boundary detector | `vllm_runner.py` `hf_runner.py` `boundary.py` `verifier.py` `datasets.py` |
-| `voi/` | Stage 0 group filter, Stage 1 token-entropy × w_pos, Stage 2 K_LA=4 lookahead + sentence-T5 clustering, CUSUM, cascade orchestrator | `stage0_group_filter.py` `stage1_entropy.py` `stage2_semantic.py` `cusum_aux.py` `cascade.py` |
+| `voi/` | Stage 0 group filter, Stage 1 token-entropy × w_pos + H_fwd (multi-step entropy), Stage 2 K_LA=4 lookahead + sentence-T5 clustering, CUSUM, cascade orchestrator | `stage0_group_filter.py` `stage1_entropy.py` `stage2_semantic.py` `cusum_aux.py` `cascade.py` |
 | `advantage/` | TD-style segment deltas over probed pivots + James–Stein shrinkage | `segment_gae.py` `shrinkage.py` |
-| `oracle/` | Q^π-variance oracle, concordance MI, κ, position curve — all offline | `q_variance_oracle.py` `concordance_check.py` `kappa_estimator.py` `position_curve.py` |
+| `oracle/` | Q^π-variance oracle, embedding-variance diagnostic, κ, H_fwd (avg entropy over next K tokens), position curve — all offline | `q_variance_oracle.py` `concordance_check.py` `kappa_estimator.py` `position_curve.py` |
 
 ## Quick start
 
@@ -32,7 +32,7 @@ python scripts/sprint_d1_infra_smoke.py \
 
 # 4. Sprint Day 2 (parallel; two GPU groups)
 python scripts/sprint_d2_concordance.py --config configs/base_qwen_math.yaml   # ~15K rollouts
-python scripts/sprint_d2_oracle.py       --config configs/base_qwen_math.yaml   # ~96K rollouts
+python scripts/sprint_d2_oracle.py       --config configs/base_qwen_math.yaml   # informative groups + H_fwd
 
 # 5. Sprint Day 3 — gate report
 python scripts/sprint_d3_gate_report.py --sprint-dir experiments/sprint

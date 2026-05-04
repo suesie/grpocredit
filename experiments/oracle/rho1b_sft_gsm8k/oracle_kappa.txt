@@ -1,0 +1,8 @@
+kappa                = 1.7615
+kappa_ci_95%         = [0.6555, 2.9864]
+mean_grad_var_sel    = 0.007880
+mean_grad_var_all    = 0.004474
+f_sel                = 0.15
+rho_gate             = 0.6152
+selection_score      = h_fwd
+h_fwd_k              = 10

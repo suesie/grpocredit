@@ -185,7 +185,7 @@ export WANDB_PROJECT=grpo-voi
 bash scripts/run_oracle.sh configs/oracle/rho1b_sft_gsm8k.yaml
 ```
 
-Output: `experiments/oracle/rho1b_sft_gsm8k/{day1_*, concordance_*, oracle_*, GATE_REPORT.md}`.
+Output: `experiments/oracle/rho1b_sft_gsm8k/{day1_*, emb_var_*, oracle_*, GATE_REPORT.md}`.
 Wall-clock: ~30 min on rho-1b. Captures the κ / ρ / position-curve baseline
 **before any GRPO updates** — this is your iter -1 reference.
 
@@ -205,7 +205,7 @@ for n in 1 2 3 4 5; do
 done
 ```
 
-Output per iter: `experiments/oracle/grpo_iter/rho1bSft2_GSM8K/iter_NNNN/{day1_*, concordance_*, oracle_*, GATE_REPORT.md}`.
+Output per iter: `experiments/oracle/grpo_iter/rho1bSft2_GSM8K/iter_NNNN/{day1_*, emb_var_*, oracle_*, GATE_REPORT.md}`.
 Wall-clock: ~30 min per iter on rho-1b, ~3-4 h per iter on 7B.
 
 **What the wrapper does**:
@@ -227,11 +227,11 @@ After §4.1 + §4.2 finish, assemble a per-iter table:
 
 ```bash
 cd ~/work/GRPO_mcts/grpocredit
-echo "iter | kappa | rho_s2 | MI_concord | group_var_frac"
+echo "iter | kappa | rho_H_fwd | rho_s2 | MI_concord | group_var_frac"
 for d in experiments/oracle/rho1b_sft_gsm8k experiments/oracle/grpo_iter/rho1bSft2_GSM8K/iter_*; do
     iter=$(basename "$d")
     kappa=$(cat "$d/oracle_kappa.txt" 2>/dev/null | head -1 | awk '{print $1}')
-    echo "$iter | $kappa | (see oracle_correlations.json) | (see concordance_mi.json) | (see day1_group_variance.json)"
+    echo "$iter | $kappa | (see oracle_correlations.json for rho_H_fwd, rho_s2) | (see emb_var_summary.json) | (see day1_group_variance.json)"
 done
 ```
 

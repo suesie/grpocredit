@@ -6,7 +6,7 @@ phase is independently launchable.
 
 | Phase | What it produces | Status | Where to look |
 |---|---|---|---|
-| **A — Offline Q^π-variance oracle** on 4 starting policies | `experiments/oracle/{policy}/GATE_REPORT.md` × 4, plus per-policy oracle / concordance / position-curve / **group-variance** artefacts. Decides whether to proceed with VoI cascade or pivot to Plan B. | **Ready to run** (this document) | §1, §2 |
+| **A — Offline Q^π-variance oracle** on 4 starting policies | `experiments/oracle/{policy}/GATE_REPORT.md` × 4, plus per-policy oracle / embedding-variance / position-curve / **group-variance** artefacts. Decides whether to proceed with VoI cascade or pivot to Plan B. | **Ready to run** (this document) | §1, §2 |
 | **B1 — VinePPO + GRPO inside treetune** | Paired training runs, same model + dataset, wandb-logged accuracy / KL / advantage-variance curves, directly comparable. | **Ready to run** | `VinePPO/SERVER2_RUNBOOK.md` |
 | **B2a — verl GRPO baseline + VoI on DeepSeekMath SFT'd** | Plain verl-GRPO vs verl-GRPO+VoI on `realtreetune/deepseekmath-7b-sft-{MATH-v2,GSM8K}`, matched compute. **Headline experiment** per `sft_warmup_plan.md` §4.1. | Code lands in turn after this | §4 of this doc |
 | **B2b — Generalization run on own-SFT'd Qwen-base** | SFT `Qwen2.5-Math-7B` (base) ourselves per `sft_warmup_plan.md` §3.A, then run GRPO + VoI on top. Demonstrates the gain replicates on a modern base. | Code lands after B2a | §5 of this doc |
@@ -255,11 +255,15 @@ for c in configs/oracle/*.yaml; do bash scripts/run_oracle.sh "$c"; done
 ```
 
 Each invocation runs Day 1 → Day 2A → Day 2B → Day 3 in order and exits
-non-zero if any gate fails. The Day 1 step now includes the
-`sft_warmup_plan.md §5` group-variance probe (256 prompts × G=8 → fraction
-of informative groups), and Day 3 reads its output and adds it as the first
-row of the gate decision table. **Exit code 6 = group-variance gate failed
-= wrong starting policy, do not RL on this `π_ref`.**
+non-zero if any gate fails. Day 2B now runs its own group-variance probe
+(256 prompts × G=8) to identify informative prompts and uses only those
+for the oracle — not random trajectories. It also computes H_fwd
+(average entropy over the next K=10 tokens at each boundary) as a
+multi-step VoI signal alongside H_token, H_sem, and s_2. The Day 1 step
+includes the `sft_warmup_plan.md §5` group-variance probe, and Day 3
+reads its output and adds it as the first row of the gate decision table.
+**Exit code 6 = group-variance gate failed = wrong starting policy, do
+not RL on this `π_ref`.**
 
 **Per-policy outputs land at:**
 
@@ -269,12 +273,14 @@ experiments/oracle/{rho1b_sft_gsm8k,deepseekmath_sft_math_v2,deepseekmath_sft_gs
 ├── day1_boundaries.json             # 5-15 boundaries/traj target
 ├── day1_verifier_accuracy.txt       # ≥ 0.95 expected on the 7B SFT'd policies
 ├── day1_group_variance.json         # NEW — sft_warmup_plan.md §5 gate
-├── concordance_mi.json              # Day 2A
-├── concordance_per_position.csv
+├── emb_var_summary.json             # Day 2A — ρ(emb_var, reward_var)
+├── emb_var_per_boundary.jsonl       # Day 2A — per-boundary detail
+├── emb_var_per_position.csv         # Day 2A — decile breakdown
+├── boundary_annotated_responses.txt # Day 2A — responses with boundary markers
 ├── oracle_q_variance.json           # Day 2B
 ├── oracle_kappa.txt                 # κ scalar with bootstrap CI
 ├── oracle_position_curve.csv        # decile curve — drives Stage-1 w_pos_shape decision
-├── oracle_correlations.json         # ρ for H_token / H_sem / s_2 with Fisher-z CIs
+├── oracle_correlations.json         # ρ for H_fwd / H_token / H_sem / s_2 with Fisher-z CIs
 ├── GATE_REPORT.md                   # Day 3 decision table — read this first
 ├── gate_decision.json               # machine-readable gate verdict
 └── launch.log                       # provenance: timestamp / config / params
@@ -287,7 +293,7 @@ experiments/oracle/{rho1b_sft_gsm8k,deepseekmath_sft_math_v2,deepseekmath_sft_gs
 | 0 | proceed to main phase |
 | 2 | proceed with caveats (one threshold marginal — usually ρ near gate) |
 | 3 | pilot run required before commit |
-| 4 | pivot to Plan B (concordance MI failed) |
+| 4 | pivot to Plan B (embedding-variance diagnostic failed — lookahead diversity does not predict reward diversity) |
 | 5 | data missing — re-run failed step |
 | **6** | **policy-class gate failed at step 0** — either ``boundaries_mean`` below threshold (π_ref produces short CoTs — expected on rho-1b at ~2.3/traj) OR ``fraction_informative`` below §5 threshold. This is a **policy-distribution signal**, not a code bug. Expected on Qwen-Instruct (saturation ceiling); borderline on rho-1b (short-CoT + bimodal GSM8K difficulty — see §2.5); a sign of a bad SFT recipe on the 7B SFT'd models. For an intentionally-weak debug policy, override with `PROCEED_ON_POLICY_GATE_FAIL=1 bash scripts/run_oracle.sh …` or `--proceed-on-policy-gate-fail` — see §2.5. |
 | **7** | **rollout-diversity sentinel failed — backend bug, not a policy verdict.** See §2.3 below. Rerun after fixing the backend; do not interpret as a πref signal. |
@@ -326,7 +332,7 @@ reproducibility (`LLM(..., seed=cfg.rollout.seed)`) is unchanged.
 > passes for no scientific gain on the smoke test or the gates. The default
 > (drop-seed) matches verl / TRL / OpenRLHF convention and is what every
 > step of this runbook (`sprint_d1`, §5 group-variance gate, Day 2 oracle
-> forced-action rollouts, Day 2 concordance MI) needs. Turn it on only when
+> forced-action rollouts, Day 2A embedding-variance diagnostic) needs. Turn it on only when
 > generating the final `GATE_REPORT.md` numbers you intend to publish, and
 > even then scope it to the one config you're freezing via a tiny overlay
 > YAML rather than editing the base:
@@ -537,9 +543,9 @@ motivated the reclassification — keep it here as the concrete reference:
 
 After all four runs finish, the headline picture comes from the gate reports.
 Assemble a comparison table (one row per policy) with columns: **group-
-variance fraction** (the §5 gate value), `κ`, `ρ_gate`, `ρ(H_token, Var Q^π)`,
-`ρ(H_sem, Var Q^π)`, `ρ(s_2, Var Q^π)`, `MI(C_prefix; C_terminal)`, and
-Day-3 verdict.
+variance fraction** (the §5 gate value), `κ`, `ρ_gate`, `ρ(H_fwd, Var Q^π)`,
+`ρ(H_token, Var Q^π)`, `ρ(H_sem, Var Q^π)`, `ρ(s_2, Var Q^π)`,
+`ρ(emb_var, reward_var)`, and Day-3 verdict.
 
 Expected pattern (the figure that motivates the paper):
 
@@ -556,8 +562,14 @@ Expected pattern (the figure that motivates the paper):
   subpopulation.
 * **`ρ`** correlations on entropy-based signals tend to **decrease** as
   models sharpen — bad news for `H_token` as a signal, neutral for `H_sem`.
-* **`MI`** should be higher at mid-trajectory boundaries than at very-early
-  ones across all four — that's the position curve (§2B).
+  `H_fwd` (average entropy over K=10 next tokens) may be more robust than
+  single-token `H_token` because it captures multi-step uncertainty; compare
+  `ρ(H_fwd, Var Q^π)` vs `ρ(H_token, Var Q^π)` in `oracle_correlations.json`.
+* **`ρ(emb_var, reward_var)`** (Day 2A concordance) should be highest for models
+  with medium-length CoTs where the 30-token lookahead is a genuine preview
+  (not the full remaining response). On rho-1b, `mean_remaining_tokens` may
+  be close to the lookahead length (30), inflating ρ — check the
+  `rho_cosine_long_only` subset in `emb_var_summary.json`.
 
 The headline RL init for the main paper is **DeepSeekMath SFT'd** (Option B
 of `sft_warmup_plan.md` §4.1). Qwen-Instruct's role is the saturation

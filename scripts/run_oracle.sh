@@ -64,10 +64,9 @@ echo "[oracle] Day 1 — infrastructure smoke test"
     --output-dir "$OUT" \
     ${DAY1_EXTRA_ARGS[@]+"${DAY1_EXTRA_ARGS[@]}"}
 
-echo "[oracle] Day 2A — concordance check"
+echo "[oracle] Day 2A — embedding-variance diagnostic"
 "$PYTHON" scripts/sprint_d2_concordance.py \
     --config "$CONFIG" \
-    --n-trajectories "$N_TRAJ" \
     --output-dir "$OUT"
 
 echo "[oracle] Day 2B — Q-variance oracle"

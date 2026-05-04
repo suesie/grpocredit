@@ -29,15 +29,16 @@ Design is frozen in two documents in the parent directory:
 | Check | Pass | Marginal | Fail |
 |---|---|---|---|
 | Group-variance fraction at step 0 (`sft_warmup_plan.md` §5) | `≥ 0.5` | (no marginal band) | `< 0.5` → wrong starting policy; switch `π_ref` (exit code 6) |
-| Concordance MI | `> 0.3` bits | `0.15`–`0.3` → NLI fallback | `≤ 0.15` → Plan B (§8 of plan) |
+| ρ(emb_var, reward_var) — concordance | `≥ 0.3` | `0.15`–`0.3` | `< 0.15` → Plan B (§8 of plan) |
 | `ρ(s_2, Var_{a~π}(Q^π))` 95% CI lower bound | `≥ ρ_gate` | straddles `ρ_gate` | below |
 | κ | `≥ 3` | `2`–`3` | `< 2` (paper pivots to efficiency headline) |
 
 `ρ_gate = sqrt(f_target / (f_sel · κ))` with `f_target = 0.10`, `f_sel = 0.15`.
 
-Plan B (§8 of `experiment_plan_grpo_voi.md`) is pre-designed — if concordance
-fails, pivot to doubly-robust GRPO with IG-as-implicit-baseline. ~70% infra
-overlap; only Stage 2 swaps out.
+Plan B (§8 of `experiment_plan_grpo_voi.md`) is pre-designed — if embedding-variance
+diagnostic fails (lookahead diversity does not predict reward diversity), pivot to
+doubly-robust GRPO with IG-as-implicit-baseline. ~70% infra overlap; only Stage 2
+swaps out.
 
 ## Repo layout
 
@@ -46,17 +47,22 @@ src/grpocredit/
   common/      configs (pydantic + YAML extends), wandb wrapper, shared dataclasses
   rollout/     vLLM runner (full / continue / forced-first-token), boundary detector,
                math_verify wrapper, GSM8K/MATH/AIME24/Olympiad/MATH-500 loaders
-  voi/         Stage 0 group filter, Stage 1 H_token·w_pos, Stage 2 sentence-T5 clustering,
-               CUSUM auxiliary, cascade orchestrator (offline + online paths)
+  voi/         Stage 0 group filter, Stage 1 H_token·w_pos + H_fwd (multi-step entropy),
+               Stage 2 sentence-T5 clustering, CUSUM auxiliary,
+               cascade orchestrator (offline + online paths)
   advantage/   TD-style segment GAE over sparse pivots, James–Stein / SE shrinkage
   oracle/      Q^π-variance oracle (top-M forced actions + optional tail stratum),
-               concordance MI, κ with bootstrap CI, position-decile curve
+               embedding-variance diagnostic, κ with bootstrap CI, position-decile curve,
+               H_fwd (avg entropy over next K tokens) as multi-step VoI signal
   training/    (empty — verl integration lands in Week 1 of main phase)
 
 scripts/
   sprint_d1_infra_smoke.py     Day 1 — infra smoke test
-  sprint_d2_concordance.py     Day 2A — concordance MI gate
-  sprint_d2_oracle.py          Day 2B — Q^π-variance oracle + κ + ρ + position curve
+  sprint_d2_concordance.py     Day 2A — embedding-variance diagnostic
+  sprint_d2_oracle.py          Day 2B — Q^π-variance oracle on informative groups
+                               (group-variance probe → informative prompts →
+                               H_fwd + H_token + H_sem + s_2 correlations with
+                               Var(Q^π) → κ + position curve)
   sprint_d3_gate_report.py     Day 3 — decision table → GATE_REPORT.md
   run_sprint.sh                runs all four in order
 
@@ -121,7 +127,7 @@ configs/
 export WANDB_PROJECT=grpo-voi
 bash scripts/run_sprint.sh
 # Exit codes from sprint_d3: 0 proceed · 2 proceed-w-caveats · 3 pilot-required
-# · 4 pivot to Plan B · 5 missing data
+# · 4 pivot to Plan B · 5 missing data · 6 wrong starting policy
 ```
 
 ## Known landmines
