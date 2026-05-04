@@ -131,8 +131,44 @@ class Stage1Scorer:
         idx = max(0, min(token_position, len(ents) - 1))
         return float(ents[idx])
 
+    def h_fwd_at(self, trajectory: Trajectory, token_position: int, k: int) -> float:
+        """Average entropy over the next *k* tokens starting at `token_position`.
+
+        H_fwd(b) = (1/K) Σ_{i=0}^{K-1} H(π(·|s_{b+i}))
+
+        If fewer than *k* entropy values remain after `token_position`, average
+        over however many are available.  Returns 0 when no values are available.
+        """
+        ents = trajectory.token_entropies
+        if not ents:
+            return 0.0
+        start = max(0, min(token_position, len(ents)))
+        window = ents[start : start + k]
+        if not window:
+            return 0.0
+        return float(sum(window) / len(window))
+
+    def h_fwd_max_at(self, trajectory: Trajectory, token_position: int, k: int) -> float:
+        """Max entropy over the next *k* tokens starting at `token_position`.
+
+        H_fwd_max(b) = max_{i=0}^{K-1} H(π(·|s_{b+i}))
+
+        Finds the peak entropy in the window rather than averaging.  Robust to
+        the case where the real decision point is a few tokens after the
+        syntactic boundary marker.  Returns 0 when no values are available.
+        """
+        ents = trajectory.token_entropies
+        if not ents:
+            return 0.0
+        start = max(0, min(token_position, len(ents)))
+        window = ents[start : start + k]
+        if not window:
+            return 0.0
+        return float(max(window))
+
     def score(
-        self, trajectory: Trajectory, boundaries: list[Boundary]
+        self, trajectory: Trajectory, boundaries: list[Boundary],
+        *, h_fwd_k: int = 0,
     ) -> list[Boundary]:
         T = trajectory.length
         for b in boundaries:
@@ -141,6 +177,14 @@ class Stage1Scorer:
             b.h_token = h
             b.w_pos = wp
             b.s1 = h * wp
+            if h_fwd_k > 0:
+                # Auto-scale K: don't let the window extend beyond ~1/3 of
+                # remaining tokens, so it stays within the current reasoning
+                # step on short CoTs.
+                remaining = T - b.token_position
+                effective_k = min(h_fwd_k, max(1, remaining // 3))
+                b.h_fwd = self.h_fwd_at(trajectory, b.token_position, effective_k)
+                b.h_fwd_max = self.h_fwd_max_at(trajectory, b.token_position, effective_k)
         return boundaries
 
     def filter_top(

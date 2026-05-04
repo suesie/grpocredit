@@ -44,6 +44,7 @@ class RolloutConfig(_Base):
     top_k: int = -1
     stop: list[str] = Field(default_factory=list)
     seed: int = 42
+    logprobs: int = 5  # top-k logprobs returned per step; used for entropy estimates
     n_per_prompt: int = 8  # group size G
     batch_size: int = 64
     tensor_parallel_size: int = 1
@@ -151,6 +152,8 @@ class OracleConfig(_Base):
     include_tail_stratum: bool = True
     tail_stratum_size: int = 16
     coverage_threshold_for_tail: float = 0.9  # run tail if c < this
+    # Forward-entropy window: H_fwd(b) = mean(H(π(·|s_{b+k})) for k=0..h_fwd_k-1)
+    h_fwd_k: int = 10
     # Concordance-specific
     concordance_lookaheads: int = 4  # K_LA
     concordance_terminal_temperature: float = 0.9

@@ -250,6 +250,8 @@ class QVarianceOracle:
                 s1=boundary.s1,
                 h_sem=boundary.h_sem,
                 s2=boundary.s2,
+                h_fwd=boundary.h_fwd,
+                h_fwd_max=boundary.h_fwd_max,
                 v_hat=None,
                 var_q_pi=None,
             )
@@ -276,6 +278,8 @@ class QVarianceOracle:
             s1=boundary.s1,
             h_sem=boundary.h_sem,
             s2=boundary.s2,
+            h_fwd=boundary.h_fwd,
+            h_fwd_max=boundary.h_fwd_max,
             v_hat=v_hat,
             var_q_pi=var,
         )

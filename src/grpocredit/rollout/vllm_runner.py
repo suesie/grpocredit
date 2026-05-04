@@ -166,7 +166,7 @@ class VLLMRolloutRunner:
         temperature: float | None = None,
         top_p: float | None = None,
         seed: int | None = None,
-        logprobs: int | None = 1,
+        logprobs: int | None = None,
         stop: list[str] | None = None,
     ) -> Any:
         """Build a `vllm.SamplingParams` that obeys the seed contract.
@@ -208,7 +208,7 @@ class VLLMRolloutRunner:
             top_p=top_p if top_p is not None else self.rollout_cfg.top_p,
             top_k=self.rollout_cfg.top_k,
             seed=effective_seed,
-            logprobs=logprobs,
+            logprobs=logprobs if logprobs is not None else self.rollout_cfg.logprobs,
             stop=stop or self.rollout_cfg.stop,
         )
 
@@ -221,7 +221,7 @@ class VLLMRolloutRunner:
         max_new_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
-        logprobs: int | None = 1,
+        logprobs: int | None = None,
         stop: list[str] | None = None,
     ) -> list[list[Any]]:
         """VinePPO-style fan-out: issue `n` single-sample requests per input
@@ -365,7 +365,6 @@ class VLLMRolloutRunner:
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 top_p=top_p,
-                logprobs=1,
             )
             results: list[list[RolloutResult]] = []
             for ids, completions in zip(prefix_token_ids, completions_by_prefix, strict=False):
@@ -381,7 +380,6 @@ class VLLMRolloutRunner:
             temperature=temperature,
             top_p=top_p,
             seed=seed,
-            logprobs=1,
         )
         outputs = self._llm.generate(prompts, params, use_tqdm=False)
         results = []
@@ -421,7 +419,6 @@ class VLLMRolloutRunner:
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 top_p=top_p,
-                logprobs=1,
             )
             results: list[list[RolloutResult]] = []
             for first_tid, completions in zip(first_token_ids, completions_by_action, strict=False):
@@ -444,7 +441,6 @@ class VLLMRolloutRunner:
             temperature=temperature,
             top_p=top_p,
             seed=seed,
-            logprobs=1,
         )
         outputs = self._llm.generate(tokens_prompts, params, use_tqdm=False)
         results = []

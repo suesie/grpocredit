@@ -1,7 +1,7 @@
 """Sprint Day 3 — gate report.
 
 Reads:
-  experiments/sprint/concordance_mi.json
+  experiments/sprint/emb_var_summary.json
   experiments/sprint/oracle_summary.json
   experiments/sprint/oracle_correlations.json
   experiments/sprint/oracle_kappa.txt
@@ -61,8 +61,12 @@ def main(
     sprint_dir: str = typer.Option("experiments/sprint"),
     config: str = typer.Option("configs/base_qwen_math.yaml"),
     run_name: str = typer.Option("sprint-d3-gate"),
-    gate_concordance_pass_bits: float = typer.Option(0.30),
-    gate_concordance_nli_bits: float = typer.Option(0.15),
+    gate_concordance_rho_pass: float = typer.Option(
+        0.30, help="ρ(emb_var, reward_var) above this → Stage 2 is a useful VoI proxy"
+    ),
+    gate_concordance_rho_marginal: float = typer.Option(
+        0.15, help="ρ between marginal and pass → proceed with caveats"
+    ),
     gate_kappa_pass: float = typer.Option(3.0),
     gate_kappa_marginal: float = typer.Option(2.0),
     gate_group_variance_pass: float = typer.Option(
@@ -81,27 +85,59 @@ def main(
     cfg = load_config(config, overrides={"output_dir": sprint_dir, "name": run_name})
     wandb_run = init_wandb(cfg, run_name=run_name, extra_config={"sprint_day": 3})
 
-    conc = _try_read(sprint_path / "concordance_mi.json")
+    conc = _try_read(sprint_path / "emb_var_summary.json")
     oracle = _try_read(sprint_path / "oracle_summary.json")
     corrs = _try_read(sprint_path / "oracle_correlations.json")
     gv = _try_read(sprint_path / "day1_group_variance.json")
 
-    concordance_mi = conc["mean_mi_bits"] if conc else None
+    concordance_rho = conc["config_a"]["rho_cosine"] if conc and "config_a" in conc else (conc.get("rho_cosine") if conc else None)
+    concordance_rho_ci = conc["config_a"].get("rho_cosine_ci") if conc and "config_a" in conc else (conc.get("rho_cosine_ci") if conc else None)
+    concordance_rho_b = conc["config_b"]["rho_cosine"] if conc and "config_b" in conc else None
+    # Selection metrics (primary concordance signals)
+    def _get_conc(key, cfg_key="config_a"):
+        if not conc:
+            return None
+        if cfg_key in conc:
+            return conc[cfg_key].get(key)
+        return conc.get(key)
+    top1_agreement = _get_conc("top1_agreement")
+    top1_agreement_b = _get_conc("top1_agreement", "config_b")
+    kappa_emb = _get_conc("kappa_emb")
+    kappa_emb_b = _get_conc("kappa_emb", "config_b")
     kappa = oracle["kappa"] if oracle else None
-    rho_s2 = oracle["rho_s2"] if oracle else None
-    rho_s2_ci = oracle["rho_s2_ci"] if oracle else [None, None]
-    rho_gate = oracle["rho_gate"] if oracle else None
-    position_shape = oracle["position_shape"] if oracle else None
+    rho_h_fwd = oracle.get("rho_H_fwd") if oracle else None
+    rho_h_fwd_ci = oracle.get("rho_H_fwd_ci", [None, None]) if oracle else [None, None]
+    rho_h_token = oracle.get("rho_H_token") if oracle else None
+    rho_h_token_ci = oracle.get("rho_H_token_ci", [None, None]) if oracle else [None, None]
+    h_fwd_k = oracle.get("h_fwd_k") if oracle else None
+    # Day 2B selection metrics
+    sel_h_fwd_top1 = oracle.get("sel_H_fwd_top1") if oracle else None
+    sel_h_fwd_kappa = oracle.get("sel_H_fwd_kappa") if oracle else None
+    sel_h_fwd_max_top1 = oracle.get("sel_H_fwd_max_top1") if oracle else None
+    sel_h_fwd_max_kappa = oracle.get("sel_H_fwd_max_kappa") if oracle else None
+    sel_h_token_top1 = oracle.get("sel_H_token_top1") if oracle else None
+    sel_h_token_kappa = oracle.get("sel_H_token_kappa") if oracle else None
+    rho_gate = oracle.get("rho_gate") if oracle else None
+    position_shape = oracle.get("position_shape") if oracle else None
     gv_frac = gv["fraction_informative"] if gv else None
 
     # Decisions
     def concordance_decision() -> str:
-        if concordance_mi is None:
+        # Primary: selection metrics (top-1 agreement and κ_emb)
+        # Fallback: Spearman ρ (legacy, if selection metrics not available)
+        if top1_agreement is not None and kappa_emb is not None:
+            if top1_agreement >= 0.5 and kappa_emb >= 1.5:
+                return "pass"
+            if top1_agreement >= 0.35 or kappa_emb >= 1.0:
+                return "marginal"
+            return "fail"
+        # Legacy path for old emb_var_summary.json without selection metrics
+        if concordance_rho is None:
             return "missing"
-        if concordance_mi > gate_concordance_pass_bits:
+        if concordance_rho >= gate_concordance_rho_pass:
             return "pass"
-        if concordance_mi > gate_concordance_nli_bits:
-            return "marginal_nli"
+        if concordance_rho >= gate_concordance_rho_marginal:
+            return "marginal"
         return "fail"
 
     def kappa_decision() -> str:
@@ -114,11 +150,16 @@ def main(
         return "fail"
 
     def rho_decision() -> str:
-        if rho_s2 is None or rho_gate is None or rho_s2_ci[0] is None:
+        # Best available per-trajectory κ_signal from Day 2B
+        best_kappa = max(
+            (v for v in [sel_h_fwd_kappa, sel_h_fwd_max_kappa, sel_h_token_kappa] if v is not None),
+            default=None,
+        )
+        if best_kappa is None:
             return "missing"
-        if rho_s2_ci[0] >= rho_gate:
+        if best_kappa >= 1.5:
             return "pass"
-        if rho_s2 >= rho_gate:
+        if best_kappa >= 1.0:
             return "marginal"
         return "fail"
 
@@ -141,7 +182,7 @@ def main(
     decisions = {
         "concordance": c_dec,
         "kappa": k_dec,
-        "rho_s2": r_dec,
+        "oracle_signal": r_dec,
         "group_variance": gv_dec,
     }
     n_pass = sum(1 for v in decisions.values() if v == "pass")
@@ -164,7 +205,12 @@ def main(
     elif c_dec == "fail":
         overall = "pivot_plan_b"
         exit_code = 4
-        next_steps = "Pivot to Plan B — doubly-robust GRPO with IG-as-implicit-baseline (plan §8)."
+        next_steps = (
+            "Concordance FAILED — lookahead embedding diversity does not predict "
+            "terminal reward diversity. Stage 2 clustering is not informative. "
+            "Consider: (a) continuous emb_var as VoI signal without clustering, "
+            "(b) Plan B — doubly-robust GRPO with IG-as-implicit-baseline (plan §8)."
+        )
     elif n_fail > 0:
         overall = "pivot_plan_b"
         exit_code = 4
@@ -191,10 +237,28 @@ def main(
 
     # Write machine-readable decision
     decision_json = {
-        "concordance_mi_bits": concordance_mi,
+        # Selection metrics (primary concordance signals)
+        "top1_agreement": top1_agreement,
+        "top1_agreement_b": top1_agreement_b,
+        "kappa_emb": kappa_emb,
+        "kappa_emb_b": kappa_emb_b,
+        # Legacy Spearman
+        "concordance_rho_cosine": concordance_rho,
+        "concordance_rho_ci": concordance_rho_ci,
+        "concordance_rho_cosine_b": concordance_rho_b,
         "kappa": kappa,
-        "rho_s2": rho_s2,
-        "rho_s2_ci": rho_s2_ci,
+        "rho_H_fwd": rho_h_fwd,
+        "rho_H_fwd_ci": rho_h_fwd_ci,
+        "rho_H_token": rho_h_token,
+        "rho_H_token_ci": rho_h_token_ci,
+        "h_fwd_k": h_fwd_k,
+        # Day 2B selection metrics
+        "sel_H_fwd_top1": sel_h_fwd_top1,
+        "sel_H_fwd_kappa": sel_h_fwd_kappa,
+        "sel_H_fwd_max_top1": sel_h_fwd_max_top1,
+        "sel_H_fwd_max_kappa": sel_h_fwd_max_kappa,
+        "sel_H_token_top1": sel_h_token_top1,
+        "sel_H_token_kappa": sel_h_token_kappa,
         "rho_gate": rho_gate,
         "position_shape": position_shape,
         "group_variance_fraction_informative": gv_frac,
@@ -224,9 +288,10 @@ def main(
         "| Check | Value | Threshold | Status |",
         "|---|---|---|---|",
         f"| Group-variance fraction at step 0 (sft_warmup_plan §5) | {_fmt(gv_frac)} | ≥ {gate_group_variance_pass} | {gv_dec} |",
-        f"| Concordance MI | {_fmt(concordance_mi)} bits | > {gate_concordance_pass_bits} bits | {c_dec} |",
+        f"| Concordance: top-1 agreement (per-traj) | {_fmt(top1_agreement)} | ≥ 0.50 | {c_dec} |",
+        f"| Concordance: κ_emb (selection concentration) | {_fmt(kappa_emb)} | ≥ 1.50 | {c_dec} |",
         f"| κ (variance concentration) | {_fmt(kappa)} | ≥ {gate_kappa_pass} | {k_dec} |",
-        f"| ρ(s_2, Var(Q^π)) 95% CI low | {_fmt(rho_s2_ci[0])} | ≥ ρ_gate = {_fmt(rho_gate)} | {r_dec} |",
+        f"| Oracle signal: best κ_sig (per-traj, H_fwd/H_fwd_max/H_token) | {_fmt(max((v for v in [sel_h_fwd_kappa, sel_h_fwd_max_kappa, sel_h_token_kappa] if v is not None), default=None))} | ≥ 1.50 | {r_dec} |",
         f"| Position curve | `{position_shape or 'missing'}` | mid-peak preferred | — |",
         "",
         "## Next steps",
@@ -236,11 +301,25 @@ def main(
         "## Raw values",
         "",
         f"- group-variance fraction (informative): {gv_frac}",
-        f"- concordance mean MI (bits): {concordance_mi}",
+        f"- **Concordance selection metrics (config A: K=4/len=30):**",
+        f"  - top-1 agreement: {top1_agreement}",
+        f"  - κ_emb: {kappa_emb}",
+        f"  - ρ(emb_var, reward_var) Spearman (legacy): {concordance_rho}",
+        f"  - Spearman 95% CI: {concordance_rho_ci}",
+        f"- **Concordance selection metrics (config B: K=8/len=15):**",
+        f"  - top-1 agreement: {top1_agreement_b}",
+        f"  - κ_emb: {kappa_emb_b}",
+        f"  - ρ(emb_var, reward_var) Spearman (legacy): {concordance_rho_b}",
         f"- κ: {kappa}",
-        f"- ρ(s_2, Var(Q^π)): {rho_s2}",
-        f"- ρ 95% CI: [{rho_s2_ci[0]}, {rho_s2_ci[1]}]",
-        f"- ρ_gate: {rho_gate}",
+        f"- **Day 2B selection metrics (per-trajectory, vs Var(Q^π)):**",
+        f"  - H_fwd: top1={sel_h_fwd_top1}, κ_sig={sel_h_fwd_kappa}",
+        f"  - H_fwd_max: top1={sel_h_fwd_max_top1}, κ_sig={sel_h_fwd_max_kappa}",
+        f"  - H_token: top1={sel_h_token_top1}, κ_sig={sel_h_token_kappa}",
+        f"- Spearman correlations (legacy):",
+        f"  - ρ(H_fwd, Var(Q^π)): {rho_h_fwd} (K={h_fwd_k})",
+        f"  - ρ(H_fwd) 95% CI: [{rho_h_fwd_ci[0]}, {rho_h_fwd_ci[1]}]",
+        f"  - ρ(H_token, Var(Q^π)): {rho_h_token}",
+        f"  - ρ(H_token) 95% CI: [{rho_h_token_ci[0]}, {rho_h_token_ci[1]}]",
         f"- position shape: {position_shape}",
         "",
     ]
@@ -253,12 +332,14 @@ def main(
         columns=["check", "value", "threshold", "status"],
         rows=[
             ["group_variance_fraction", gv_frac, gate_group_variance_pass, gv_dec],
-            ["concordance_mi_bits", concordance_mi, gate_concordance_pass_bits, c_dec],
+            ["concordance_top1", top1_agreement, 0.50, c_dec],
+            ["concordance_kappa_emb", kappa_emb, 1.50, c_dec],
             ["kappa", kappa, gate_kappa_pass, k_dec],
-            ["rho_s2_ci_low", rho_s2_ci[0], rho_gate, r_dec],
-            ["position_shape", position_shape, "mid_peak", "—"],
+            ["oracle_signal_kappa_sig", max((v for v in [sel_h_fwd_kappa, sel_h_fwd_max_kappa, sel_h_token_kappa] if v is not None), default=None), 1.50, r_dec],
         ],
     )
+    # position_shape is logged separately (string-valued, can't mix into numeric table)
+    wandb_run.log({"gate/position_shape": position_shape or "missing"})
     wandb_run.log_artifact(
         sprint_path / "GATE_REPORT.md",
         artifact_type="gate_report",

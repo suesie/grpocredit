@@ -16,6 +16,7 @@ model:
 rollout:
   backend: vllm
   max_new_tokens: 1024
+  logprobs: 5                         # top-k logprobs per step for entropy estimates
   temperature: 0.9
   top_p: 0.95
   top_k: -1
@@ -74,6 +75,7 @@ oracle:
   include_tail_stratum: true
   tail_stratum_size: 16
   coverage_threshold_for_tail: 0.9
+  h_fwd_k: 10                        # forward-entropy window: H_fwd(b) = mean(H(π(·|s_{b+k})) for k=0..K-1)
   concordance_lookaheads: 4
   concordance_terminal_temperature: 0.9
   concordance_min_boundaries: 500

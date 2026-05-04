@@ -93,6 +93,8 @@ class Boundary:
     s1: float | None = None
     h_sem: float | None = None
     s2: float | None = None
+    h_fwd: float | None = None  # mean entropy over next K tokens
+    h_fwd_max: float | None = None  # max entropy over next K tokens
     cusum_abs: float | None = None
     selected: bool = False
     stage_stopped_at: int = 0  # 0 = passed all stages, 1 = cut by Stage 1, ...
@@ -147,6 +149,8 @@ class OracleRecord:
     s1: float | None = None
     h_sem: float | None = None
     s2: float | None = None
+    h_fwd: float | None = None  # mean entropy over next K tokens
+    h_fwd_max: float | None = None  # max entropy over next K tokens
     # Oracle-derived
     v_hat: float | None = None
     var_q_pi: float | None = None  # head-truncated unless tail_result is set
