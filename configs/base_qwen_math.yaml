@@ -16,7 +16,7 @@ model:
 rollout:
   backend: vllm
   max_new_tokens: 1024
-  logprobs: 5                         # top-k logprobs per step for entropy estimates
+  logprobs: 10                        # top-k logprobs per step for entropy estimates
   temperature: 0.9
   top_p: 0.95
   top_k: -1

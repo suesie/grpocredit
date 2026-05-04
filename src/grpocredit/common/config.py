@@ -44,7 +44,7 @@ class RolloutConfig(_Base):
     top_k: int = -1
     stop: list[str] = Field(default_factory=list)
     seed: int = 42
-    logprobs: int = 5  # top-k logprobs returned per step; used for entropy estimates
+    logprobs: int = 10  # top-k logprobs returned per step; used for entropy estimates
     n_per_prompt: int = 8  # group size G
     batch_size: int = 64
     tensor_parallel_size: int = 1
